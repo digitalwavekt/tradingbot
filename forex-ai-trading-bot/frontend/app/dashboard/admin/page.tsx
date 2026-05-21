@@ -3,41 +3,52 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/hooks/useAuth';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
-import { Progress } from '@/components/ui/progress';
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
-} from '@/components/ui/table';
-import {
-  Shield, AlertTriangle, Power, PowerOff, Settings, Users,
-  Activity, Lock, Unlock, TrendingUp, TrendingDown
-} from 'lucide-react';
 import { adminAPI, tradeAPI } from '@/lib/api';
+import { RiskConfig, AuditLog, User, TradingMode } from '@/types';
+import {
+  Shield,
+  AlertTriangle,
+  Power,
+  Settings,
+  Users,
+  FileText,
+  Activity,
+  CheckCircle2,
+  XCircle,
+  Save,
+  RotateCcw,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
+
+const tradingModes: TradingMode[] = ['LEARNING', 'PAPER', 'DEMO', 'HUMAN_APPROVAL', 'LIVE_AUTO'];
+
+const modeStyles: Record<TradingMode, { bg: string; text: string; border: string; label: string }> = {
+  LEARNING: { bg: 'bg-sky-500/10', text: 'text-sky-400', border: 'border-sky-500/20', label: 'Learning' },
+  PAPER: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/20', label: 'Paper Trading' },
+  DEMO: { bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/20', label: 'Demo' },
+  HUMAN_APPROVAL: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/20', label: 'Human Approval' },
+  LIVE_AUTO: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/20', label: 'Live Auto' },
+};
 
 export default function AdminPage() {
   const router = useRouter();
   const { user } = useAuthStore();
-  const [config, setConfig] = useState<any>(null);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [riskLogs, setRiskLogs] = useState<any[]>([]);
-  const [users, setUsers] = useState<any[]>([]);
+  const [config, setConfig] = useState<RiskConfig | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'mode' | 'risk' | 'logs' | 'users'>('mode');
+
   const fetchData = useCallback(async () => {
     try {
-      const [configRes, auditRes, riskRes, usersRes] = await Promise.all([
+      const [configRes, auditRes, usersRes] = await Promise.all([
         adminAPI.getConfig(),
         adminAPI.getAuditLogs(),
-        adminAPI.getRiskLogs(),
-        adminAPI.getUsers()
+        adminAPI.getUsers(),
       ]);
       setConfig(configRes.data.config);
-      setAuditLogs(auditRes.data.logs);
-      setRiskLogs(riskRes.data.logs);
-      setUsers(usersRes.data.users);
+      setAuditLogs(auditRes.data.logs || []);
+      setUsers(usersRes.data.users || []);
     } catch (error) {
       toast.error('Failed to fetch admin data');
     }
@@ -51,11 +62,11 @@ export default function AdminPage() {
     fetchData();
   }, [fetchData, router, user]);
 
-  const handleModeChange = async (mode: string) => {
+  const handleModeChange = async (mode: TradingMode) => {
     setIsLoading(true);
     try {
       await adminAPI.setMode(mode);
-      toast.success(`Mode changed to ${mode}`);
+      toast.success(`Mode changed to ${modeLabel(mode)}`);
       fetchData();
     } catch (error: any) {
       toast.error(error.response?.data?.error || 'Failed to change mode');
@@ -116,259 +127,294 @@ export default function AdminPage() {
     }
   };
 
-  return (
-    <>
-        <section className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-          <div>
-          <div className="page-kicker">Governance console</div>
-          <h2 className="page-title">Admin Panel</h2>
-          <p className="page-copy">Control trading mode, emergency actions, risk configuration, audit trails, and user access.</p>
-          </div>
-          {config?.killSwitchTriggered && (
-            <Badge variant="danger" className="animate-pulse">KILL SWITCH ACTIVE</Badge>
-          )}
-        </section>
+  const modeLabel = (mode: TradingMode) => modeStyles[mode].label;
 
-        {config?.killSwitchTriggered && (
-          <Alert variant="destructive" className="mb-6">
-            <AlertTriangle className="h-5 w-5" />
-            <AlertTitle className="text-lg font-bold">EMERGENCY KILL SWITCH ACTIVE</AlertTitle>
-            <AlertDescription>
-              Reason: {config.killSwitchReason}. All trading has been halted. Review before resetting.
-              <div className="mt-3">
-                <Button variant="outline" size="sm" onClick={handleResetKillSwitch} disabled={isLoading}>
-                  <Unlock className="w-4 h-4 mr-2" />
-                  Reset Kill Switch (Admin Only)
-                </Button>
+  return (
+    <div className="page-container">
+      {/* Header */}
+      <div className="mb-8">
+        <p className="page-kicker">Governance Console</p>
+        <h1 className="page-title">Admin Panel</h1>
+        <p className="page-copy">
+          Control trading mode, emergency actions, risk configuration, audit trails, and user access.
+        </p>
+      </div>
+
+      {/* Kill Switch Alert */}
+      {config?.killSwitchTriggered && (
+        <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 animate-pulse-red">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="h-6 w-6 text-red-400" />
+            <div>
+              <p className="text-lg font-bold text-red-400">KILL SWITCH ACTIVE</p>
+              <p className="text-sm text-red-300/80">
+                Reason: {config.killSwitchReason}. All trading has been halted. Review before resetting.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="mb-6 flex gap-2 border-b border-white/[0.06] pb-1">
+        {[
+          { id: 'mode', label: 'Trading Mode', icon: Power },
+          { id: 'risk', label: 'Risk Config', icon: Settings },
+          { id: 'logs', label: 'Audit Logs', icon: FileText },
+          { id: 'users', label: 'Users', icon: Users },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-all rounded-t-lg ${
+                activeTab === tab.id
+                  ? 'text-blue-400 border-b-2 border-blue-400 bg-blue-500/5'
+                  : 'text-slate-400 hover:text-slate-300 hover:bg-white/[0.02]'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab Content */}
+      <div className="space-y-6">
+        {/* Trading Mode Control */}
+        {activeTab === 'mode' && (
+          <div className="space-y-6">
+            <div className="surface p-6">
+              <h3 className="mb-4 text-lg font-semibold text-white">Trading Mode Control</h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {tradingModes.map((mode) => {
+                  const style = modeStyles[mode];
+                  const isActive = config && config.isLiveTradingEnabled ? mode === 'LIVE_AUTO' : mode === (config?.currentMode || 'LEARNING');
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() => handleModeChange(mode)}
+                      disabled={isLoading}
+                      className={`rounded-xl border p-4 text-left transition-all duration-200 ${
+                        isActive
+                          ? `${style.bg} ${style.border} ring-1 ring-${style.text.split('-')[1]}-500/30`
+                          : 'border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={`text-sm font-semibold ${isActive ? style.text : 'text-slate-300'}`}>
+                          {style.label}
+                        </span>
+                        {isActive && <CheckCircle2 className={`h-4 w-4 ${style.text}`} />}
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {mode === 'LEARNING' && 'Observe only, no orders'}
+                        {mode === 'PAPER' && 'Simulate orders & P&L'}
+                        {mode === 'DEMO' && 'Demo environment'}
+                        {mode === 'HUMAN_APPROVAL' && 'Require manual approval'}
+                        {mode === 'LIVE_AUTO' && 'Guarded live execution'}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
-            </AlertDescription>
-          </Alert>
+            </div>
+
+            <div className="grid gap-6 sm:grid-cols-2">
+              <div className="surface p-6">
+                <h3 className="mb-4 text-lg font-semibold text-white">Live Trading</h3>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className={`text-sm font-medium ${config?.isLiveTradingEnabled ? 'text-emerald-400' : 'text-slate-400'}`}>
+                      {config?.isLiveTradingEnabled ? 'ENABLED' : 'DISABLED'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {config?.isLiveTradingEnabled ? 'Live orders will be executed' : 'Only paper/demo trading allowed'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleEnableLive(!config?.isLiveTradingEnabled)}
+                    disabled={isLoading}
+                    className={`btn-${config?.isLiveTradingEnabled ? 'secondary' : 'primary'}`}
+                  >
+                    {config?.isLiveTradingEnabled ? 'Disable' : 'Enable'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="surface p-6">
+                <h3 className="mb-4 text-lg font-semibold text-white">Emergency Actions</h3>
+                <div className="space-y-3">
+                  <button
+                    onClick={handleKillSwitch}
+                    disabled={isLoading || config?.killSwitchTriggered}
+                    className="btn-danger w-full"
+                  >
+                    <AlertTriangle className="mr-2 h-4 w-4" />
+                    Activate Kill Switch
+                  </button>
+                  {config?.killSwitchTriggered && (
+                    <button
+                      onClick={handleResetKillSwitch}
+                      disabled={isLoading}
+                      className="btn-secondary w-full"
+                    >
+                      <RotateCcw className="mr-2 h-4 w-4" />
+                      Reset Kill Switch
+                    </button>
+                  )}
+                  <button
+                    onClick={handleCloseAllTrades}
+                    className="btn-secondary w-full"
+                  >
+                    <XCircle className="mr-2 h-4 w-4" />
+                    Close All Trades
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
-        <Card className="surface rounded-lg mb-8">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Settings className="w-5 h-5" />
-              Trading Mode Control
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              {['LEARNING', 'PAPER', 'DEMO', 'HUMAN_APPROVAL', 'LIVE_AUTO'].map((mode) => (
-                <Button
-                  key={mode}
-                  variant={config?.mode === mode ? 'default' : 'outline'}
-                  className={config?.mode === mode ? 'ring-2 ring-blue-400' : ''}
-                  onClick={() => handleModeChange(mode)}
-                  disabled={isLoading || config?.killSwitchTriggered}
-                >
-                  {mode === 'LIVE_AUTO' && <AlertTriangle className="w-4 h-4 mr-1" />}
-                  {mode.replace('_', ' ')}
-                </Button>
+        {/* Risk Configuration */}
+        {activeTab === 'risk' && (
+          <div className="surface p-6">
+            <h3 className="mb-6 text-lg font-semibold text-white">Risk Configuration</h3>
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                { label: 'Risk Per Trade', value: config?.riskPerTradePercent || 0.5, unit: '%', key: 'riskPerTradePercent' },
+                { label: 'Daily Max Loss', value: config?.dailyMaxLossPercent || 2, unit: '%', key: 'dailyMaxLossPercent' },
+                { label: 'Max Open Trades', value: config?.maxOpenTrades || 3, unit: '', key: 'maxOpenTrades' },
+                { label: 'Min Risk-Reward', value: config?.minRiskReward || 2, unit: ':1', key: 'minRiskReward', prefix: '1:' },
+                { label: 'Max Drawdown', value: config?.maxDrawdownPercent || 10, unit: '%', key: 'maxDrawdownPercent' },
+                { label: 'Confidence Threshold', value: config?.minConfidenceScore || 65, unit: '%', key: 'minConfidenceScore' },
+              ].map((item) => (
+                <div key={item.key} className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-4">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider">{item.label}</p>
+                  <p className="mt-2 text-2xl font-bold text-white">
+                    {item.prefix || ''}{item.value}{item.unit}
+                  </p>
+                </div>
               ))}
             </div>
+          </div>
+        )}
 
-            <div className="mt-6 flex items-center gap-4">
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-slate-400">Live Trading</span>
-                  <Badge variant={config?.isLiveTradingEnabled ? 'success' : 'secondary'}>
-                    {config?.isLiveTradingEnabled ? 'ENABLED' : 'DISABLED'}
-                  </Badge>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="success"
-                    size="sm"
-                    onClick={() => handleEnableLive(true)}
-                    disabled={isLoading || config?.isLiveTradingEnabled}
-                  >
-                    <Lock className="w-4 h-4 mr-2" />
-                    Enable Live
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => handleEnableLive(false)}
-                    disabled={isLoading || !config?.isLiveTradingEnabled}
-                  >
-                    <Unlock className="w-4 h-4 mr-2" />
-                    Disable Live
-                  </Button>
-                </div>
-              </div>
+        {/* Audit Logs */}
+        {activeTab === 'logs' && (
+          <div className="surface overflow-hidden">
+            <div className="border-b border-white/[0.06] px-6 py-4">
+              <h3 className="text-lg font-semibold text-white">Recent Audit Logs</h3>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="surface rounded-lg mb-8 border-red-500/30">
-          <CardHeader>
-            <CardTitle className="text-red-400 flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5" />
-              Emergency Actions
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2">
-            <Button
-              variant="danger"
-              size="lg"
-              onClick={handleKillSwitch}
-              disabled={isLoading || config?.killSwitchTriggered}
-            >
-              <PowerOff className="w-5 h-5 mr-2" />
-              ACTIVATE KILL SWITCH
-            </Button>
-            <Button
-              variant="warning"
-              size="lg"
-              onClick={handleCloseAllTrades}
-              disabled={isLoading}
-            >
-              <TrendingDown className="w-5 h-5 mr-2" />
-              Close All Trades
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card className="surface rounded-lg mb-8">
-          <CardHeader>
-            <CardTitle className="text-white">Risk Configuration</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div>
-                <label className="text-sm text-slate-400">Risk Per Trade</label>
-                <div className="text-xl font-bold text-white">{config?.riskPerTradePercent || 0.5}%</div>
-                <Progress value={config?.riskPerTradePercent || 0.5} max={2} variant="warning" />
-              </div>
-              <div>
-                <label className="text-sm text-slate-400">Daily Max Loss</label>
-                <div className="text-xl font-bold text-white">{config?.dailyMaxLossPercent || 2}%</div>
-                <Progress value={config?.dailyMaxLossPercent || 2} max={5} variant="danger" />
-              </div>
-              <div>
-                <label className="text-sm text-slate-400">Max Open Trades</label>
-                <div className="text-xl font-bold text-white">{config?.maxOpenTrades || 3}</div>
-              </div>
-              <div>
-                <label className="text-sm text-slate-400">Min Risk-Reward</label>
-                <div className="text-xl font-bold text-white">1:{config?.minRiskReward || 2}</div>
-              </div>
-              <div>
-                <label className="text-sm text-slate-400">Max Drawdown</label>
-                <div className="text-xl font-bold text-white">{config?.maxDrawdownPercent || 10}%</div>
-              </div>
-              <div>
-                <label className="text-sm text-slate-400">Confidence Threshold</label>
-                <div className="text-xl font-bold text-white">{config?.minConfidenceScore || 65}%</div>
-              </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-white/[0.06]">
+                    <th className="table-header px-6 py-3">Time</th>
+                    <th className="table-header px-6 py-3">Action</th>
+                    <th className="table-header px-6 py-3">User</th>
+                    <th className="table-header px-6 py-3">Severity</th>
+                    <th className="table-header px-6 py-3">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditLogs.slice(0, 20).map((log) => (
+                    <tr key={log.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                      <td className="table-cell px-6">{new Date(log.createdAt).toLocaleString()}</td>
+                      <td className="table-cell px-6">
+                        <span className={`badge ${
+                          log.severity === 'critical' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                          log.severity === 'warning' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                          'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        }`}>
+                          {log.action}
+                        </span>
+                      </td>
+                      <td className="table-cell px-6 text-slate-400">{log.userEmail}</td>
+                      <td className="table-cell px-6">
+                        <span className={`capitalize ${
+                          log.severity === 'critical' ? 'text-red-400' :
+                          log.severity === 'warning' ? 'text-amber-400' :
+                          'text-blue-400'
+                        }`}>
+                          {log.severity}
+                        </span>
+                      </td>
+                      <td className="table-cell px-6 text-xs text-slate-500 max-w-xs truncate">
+                        {JSON.stringify(log.details)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!auditLogs.length && (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-sm text-slate-500">
+                        No audit logs found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        )}
 
-        <Card className="surface rounded-lg mb-8">
-          <CardHeader>
-            <CardTitle className="text-white flex items-center gap-2">
-              <Activity className="w-5 h-5" />
-              Recent Audit Logs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead>Severity</TableHead>
-                  <TableHead>Details</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {auditLogs.slice(0, 10).map((log) => (
-                  <TableRow key={log._id}>
-                    <TableCell className="text-slate-400 text-xs">
-                      {new Date(log.createdAt).toLocaleString()}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={log.severity === 'CRITICAL' ? 'danger' : log.severity === 'WARNING' ? 'warning' : 'default'}>
-                        {log.action}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-slate-300">{log.userEmail}</TableCell>
-                    <TableCell>
-                      <Badge variant={log.severity === 'CRITICAL' ? 'danger' : log.severity === 'WARNING' ? 'warning' : 'info'}>
-                        {log.severity}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-slate-400 text-xs max-w-xs truncate">
-                      {JSON.stringify(log.details)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!auditLogs.length && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="py-8 text-center text-slate-500">
-                      No audit logs found.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        {user?.role === 'admin' && (
-          <Card className="surface rounded-lg">
-            <CardHeader>
-              <CardTitle className="text-white flex items-center gap-2">
-                <Users className="w-5 h-5" />
-                Users
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Last Login</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
+        {/* Users */}
+        {activeTab === 'users' && user?.role === 'admin' && (
+          <div className="surface overflow-hidden">
+            <div className="border-b border-white/[0.06] px-6 py-4">
+              <h3 className="text-lg font-semibold text-white">Users</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-white/[0.06]">
+                    <th className="table-header px-6 py-3">Name</th>
+                    <th className="table-header px-6 py-3">Email</th>
+                    <th className="table-header px-6 py-3">Role</th>
+                    <th className="table-header px-6 py-3">Status</th>
+                    <th className="table-header px-6 py-3">Last Login</th>
+                  </tr>
+                </thead>
+                <tbody>
                   {users.map((u) => (
-                    <TableRow key={u._id}>
-                      <TableCell className="text-white">{u.name}</TableCell>
-                      <TableCell className="text-slate-400">{u.email}</TableCell>
-                      <TableCell>
-                        <Badge variant={u.role === 'admin' ? 'danger' : u.role === 'subadmin' ? 'warning' : 'default'}>
+                    <tr key={u.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                      <td className="table-cell px-6 font-medium text-white">{u.name}</td>
+                      <td className="table-cell px-6 text-slate-400">{u.email}</td>
+                      <td className="table-cell px-6">
+                        <span className={`badge ${
+                          u.role === 'admin' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                          u.role === 'subadmin' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                          'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                        }`}>
                           {u.role}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={u.isActive ? 'success' : 'secondary'}>
+                        </span>
+                      </td>
+                      <td className="table-cell px-6">
+                        <span className={`flex items-center gap-1.5 text-xs ${u.isActive ? 'text-emerald-400' : 'text-red-400'}`}>
+                          <div className={`h-2 w-2 rounded-full ${u.isActive ? 'bg-emerald-400' : 'bg-red-400'}`} />
                           {u.isActive ? 'Active' : 'Inactive'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-slate-400 text-xs">
+                        </span>
+                      </td>
+                      <td className="table-cell px-6 text-slate-500">
                         {u.lastLogin ? new Date(u.lastLogin).toLocaleString() : 'Never'}
-                      </TableCell>
-                    </TableRow>
+                      </td>
+                    </tr>
                   ))}
                   {!users.length && (
-                    <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-slate-500">
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-sm text-slate-500">
                         No users found.
-                      </TableCell>
-                    </TableRow>
+                      </td>
+                    </tr>
                   )}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
-    </>
+      </div>
+    </div>
   );
 }

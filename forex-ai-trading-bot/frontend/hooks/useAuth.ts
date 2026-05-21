@@ -1,3 +1,5 @@
+'use client';
+
 import { create } from 'zustand';
 import { User } from '@/types';
 import { authAPI } from '@/lib/api';
@@ -71,7 +73,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       tokenExpiresAt: getTokenExpiry(token),
       refreshTokenExpiresAt: getTokenExpiry(refreshToken),
       isAuthenticated: true,
-      isLoading: false
+      isLoading: false,
     });
   },
 
@@ -84,7 +86,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       tokenExpiresAt: null,
       refreshTokenExpiresAt: null,
       isAuthenticated: false,
-      isLoading: false
+      isLoading: false,
     });
     window.location.href = '/login';
   },
@@ -106,7 +108,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         tokenExpiresAt: getTokenExpiry(token),
         refreshTokenExpiresAt: refreshToken ? getTokenExpiry(refreshToken) : null,
         isAuthenticated: true,
-        isLoading: false
+        isLoading: false,
       });
     } catch {
       clearStoredAuth();
@@ -117,7 +119,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         tokenExpiresAt: null,
         refreshTokenExpiresAt: null,
         isAuthenticated: false,
-        isLoading: false
+        isLoading: false,
       });
     }
   },
@@ -138,7 +140,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       tokenExpiresAt: getTokenExpiry(token),
       refreshTokenExpiresAt: getTokenExpiry(refreshToken),
       isAuthenticated: true,
-      isLoading: false
+      isLoading: false,
     });
   },
 }));

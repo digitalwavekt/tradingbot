@@ -2,120 +2,136 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'subadmin' | 'user' | 'auditor';
+  role: 'admin' | 'subadmin' | 'user';
+  isActive: boolean;
   lastLogin?: string;
-}
-
-export interface Trade {
-  tradeId: string;
-  pair: string;
-  direction: 'BUY' | 'SELL';
-  entryPrice: number;
-  exitPrice?: number;
-  stopLoss: number;
-  takeProfit: number;
-  riskReward: number;
-  positionSize: number;
-  status: 'PENDING' | 'OPEN' | 'CLOSED' | 'CANCELLED';
-  mode: 'PAPER' | 'DEMO' | 'LIVE';
-  monetaryPnl?: number;
-  pipsGained?: number;
-  exitReason?: string;
-  createdAt: string;
-  closedAt?: string;
-}
-
-export interface Signal {
-  signalId: string;
-  pair: string;
-  direction: 'BUY' | 'SELL' | 'WAIT' | 'NO_TRADE';
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
-  riskReward: number;
-  confidence: number;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
-  aiAnalysis?: {
-    marketSummary: string;
-    finalRecommendation: string;
-    confidencePercentage: number;
-    riskWarning: string;
-  };
   createdAt: string;
 }
 
-export interface BotConfig {
-  mode: 'LEARNING' | 'PAPER' | 'DEMO' | 'HUMAN_APPROVAL' | 'LIVE_AUTO';
-  isLiveTradingEnabled: boolean;
-  riskPerTradePercent: number;
-  dailyMaxLossPercent: number;
-  weeklyMaxLossPercent: number;
-  maxOpenTrades: number;
-  minRiskReward: number;
-  killSwitchTriggered: boolean;
-  killSwitchReason?: string;
-  activeBroker: string;
+export interface AuthState {
+  user: User | null;
+  token: string | null;
+  refreshToken: string | null;
+  tokenExpiresAt: number | null;
+  refreshTokenExpiresAt: number | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
 }
 
 export interface DashboardData {
-  botMode: string;
-  killSwitchActive: boolean;
-  killSwitchReason?: string;
-  isLiveEnabled: boolean;
   account: {
     balance: number;
     equity: number;
-    marginUsed: number;
     openPositions: number;
     paperTradingDays: number;
     paperTotalReturn: number;
   };
   today: {
-    trades: number;
     pnl: number;
+    trades: number;
   };
-  signals: {
-    total: number;
-    pending: number;
-  };
-  recentNews?: Array<{
-    title: string;
-    currency: string;
-    impact: string;
-    scheduledTime: string;
-  }>;
-  systemHealth?: Array<{
-    component: string;
-    status: 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY' | string;
-  }>;
+  isLiveEnabled: boolean;
+  currentMode: TradingMode;
+  systemHealth: SystemHealth[];
 }
 
-export interface MarketData {
+export type TradingMode = 'LEARNING' | 'PAPER' | 'DEMO' | 'HUMAN_APPROVAL' | 'LIVE_AUTO';
+
+export interface SystemHealth {
+  component: string;
+  status: 'healthy' | 'warning' | 'critical';
+  latency?: number;
+  lastChecked: string;
+}
+
+export interface Trade {
+  id: string;
   pair: string;
-  bid: number;
-  ask: number;
-  spread: number;
-  spreadPips: number;
-  timestamp: string;
-  session: string;
-  volatilityRegime: string;
+  direction: 'BUY' | 'SELL';
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit: number;
+  positionSize: number;
+  monetaryPnl: number;
+  status: 'OPEN' | 'CLOSED' | 'PENDING';
+  mode: TradingMode;
+  createdAt: string;
+  closedAt?: string;
+}
+
+export interface Signal {
+  id: string;
+  symbol: string;
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  confidence: number;
+  reasoning: string;
+  riskNotes: string;
+  tradeAllowed: boolean;
+  suggestedSetup: {
+    entry: number;
+    stopLoss: number;
+    target: number;
+  };
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXECUTED';
+  createdAt: string;
+}
+
+export interface Performance {
+  totalTrades: number;
+  winRate: number;
+  profitFactor: number;
+  totalPnl: number;
+  avgWin: number;
+  avgLoss: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
 }
 
 export interface BacktestResult {
-  backtestId: string;
-  strategyName: string;
-  pair: string;
-  status: string;
-  results?: {
-    totalTrades: number;
-    winRate: number;
-    profitFactor: number;
-    netProfitPercent: number;
-    maxDrawdownPercent: number;
-  };
-  validation?: {
-    rejected: boolean;
-    rejectionReasons: string[];
-  };
+  id: string;
+  strategy: string;
+  symbol: string;
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  finalCapital: number;
+  totalReturn: number;
+  maxDrawdown: number;
+  winRate: number;
+  profitFactor: number;
+  totalTrades: number;
   createdAt: string;
+}
+
+export interface RiskConfig {
+  riskPerTradePercent: number;
+  dailyMaxLossPercent: number;
+  maxOpenTrades: number;
+  minRiskReward: number;
+  maxDrawdownPercent: number;
+  minConfidenceScore: number;
+  killSwitchTriggered: boolean;
+  killSwitchReason?: string;
+  isLiveTradingEnabled: boolean;
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  userEmail: string;
+  severity: 'info' | 'warning' | 'critical';
+  details: Record<string, any>;
+  createdAt: string;
+}
+
+export interface MarketData {
+  symbol: string;
+  ltp: number;
+  change: number;
+  changePercent: number;
+  volume: number;
+  high: number;
+  low: number;
+  open: number;
+  previousClose: number;
 }
