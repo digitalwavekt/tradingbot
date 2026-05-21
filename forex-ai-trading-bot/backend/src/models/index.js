@@ -1,0 +1,21 @@
+module.exports = {
+  User: require('./User'),
+  BotConfig: require('./BotConfig'),
+  CandleData: require('./CandleData'),
+  MarketData: require('./MarketData'),
+  NewsEvent: require('./NewsEvent'),
+  Signal: require('./Signal'),
+  Trade: require('./Trade'),
+  RiskLog: require('./RiskLog'),
+  AiAnalysis: require('./AiAnalysis'),
+  BacktestResult: require('./BacktestResult'),
+  BrokerAccount: require('./BrokerAccount'),
+  AuditLog: require('./AuditLog'),
+  SystemHealth: require('./SystemHealth'),
+  AppConfig: require('./AppConfig'),
+  Instrument: require('./Instrument'),
+  Watchlist: require('./Watchlist'),
+  Candle: require('./Candle'),
+  Order: require('./Order'),
+  RiskDecision: require('./RiskDecision')
+};
