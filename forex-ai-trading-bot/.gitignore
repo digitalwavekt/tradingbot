@@ -85,3 +85,6 @@ pnpm-lock.yaml
 /LIVE_TRADING_SAFETY_CHECKLIST.md
 /PAPER_TRADING_GUIDE.md
 /SECURITY.md
+
+.vercel
+.env*.local
