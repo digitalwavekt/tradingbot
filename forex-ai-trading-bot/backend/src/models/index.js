@@ -17,5 +17,6 @@ module.exports = {
   Watchlist: require('./Watchlist'),
   Candle: require('./Candle'),
   Order: require('./Order'),
-  RiskDecision: require('./RiskDecision')
+  RiskDecision: require('./RiskDecision'),
+  RefreshToken: require('./RefreshToken')
 };

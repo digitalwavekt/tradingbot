@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const connectDB = require('./config/database');
 const { connectRedis } = require('./config/redis');
+const { validateStartupEnv } = require('./config/env');
 const logger = require('./utils/logger');
 const { bootstrapDefaults } = require('./services/config/AppConfigService');
 const { bootstrapEventBus } = require('./core/events/EventBusBootstrap');
@@ -33,6 +34,34 @@ const scheduler = require('./jobs/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+validateStartupEnv();
+
+function requestId(req, res, next) {
+  req.id = req.headers['x-request-id'] || require('crypto').randomUUID();
+  res.setHeader('X-Request-Id', req.id);
+  next();
+}
+
+function hasUnsafeMongoKey(value) {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(hasUnsafeMongoKey);
+  return Object.keys(value).some(key => (
+    key.startsWith('$') ||
+    key.includes('.') ||
+    hasUnsafeMongoKey(value[key])
+  ));
+}
+
+function rejectMongoOperators(req, res, next) {
+  if (hasUnsafeMongoKey(req.body) || hasUnsafeMongoKey(req.query) || hasUnsafeMongoKey(req.params)) {
+    return res.status(400).json({ error: 'Invalid request payload' });
+  }
+  next();
+}
+
+app.set('trust proxy', 1);
+app.use(requestId);
 
 // Security middleware
 app.use(helmet({
@@ -66,13 +95,30 @@ const authLimiter = rateLimit({
   message: { error: 'Too many authentication attempts. Please try again later.' }
 });
 
-app.use('/api/auth/', authLimiter);
+const sensitiveLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many sensitive actions, please try again later.' }
+});
+
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/public-register', authLimiter);
+app.use('/api/auth/refresh', sensitiveLimiter);
+app.use('/api/admin/mode', sensitiveLimiter);
+app.use('/api/admin/enable-live', sensitiveLimiter);
+app.use('/api/admin/kill-switch', sensitiveLimiter);
+app.use('/api/broker', sensitiveLimiter);
 app.use(limiter);
 
 app.use(compression());
-app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
+app.use(morgan(':remote-addr :method :url :status :res[content-length] - :response-time ms :req[x-request-id]', {
+  stream: { write: msg => logger.info(msg.trim()) }
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(rejectMongoOperators);
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -89,9 +135,10 @@ app.use('/api/health', healthRoutes);
 const { createWebSocketServer } = require('./websocket/server');
 
 // Error handling
-app.use((err, req, res, next) => {
-  logger.error(`Unhandled error: ${err.message}`, { stack: err.stack });
+app.use((err, req, res, _next) => {
+  logger.error(`Unhandled error: ${err.message}`, { requestId: req.id, stack: err.stack });
   res.status(err.status || 500).json({
+    requestId: req.id,
     error: process.env.NODE_ENV === 'production' 
       ? 'Internal server error' 
       : err.message

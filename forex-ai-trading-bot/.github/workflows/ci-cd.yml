@@ -28,8 +28,17 @@ jobs:
         run: npm test
         env:
           NODE_ENV: test
-          JWT_SECRET: test-secret-key-123456789
+          JWT_ACCESS_SECRET: test-access-secret-key-123456789000000
+          JWT_REFRESH_SECRET: test-refresh-secret-key-12345678900000
+          JWT_ISSUER: tradingbot-api
+          JWT_AUDIENCE: tradingbot-client
           ENCRYPTION_KEY: test-encryption-key-123456789!!
+      - name: Build backend
+        working-directory: ./backend
+        run: npm run build
+      - name: Audit backend production deps
+        working-directory: ./backend
+        run: npm audit --omit=dev
 
   test-frontend:
     runs-on: ubuntu-latest
@@ -47,6 +56,9 @@ jobs:
       - name: Build
         working-directory: ./frontend
         run: npm run build
+      - name: Audit frontend production deps
+        working-directory: ./frontend
+        run: npm audit --omit=dev
 
   deploy-backend:
     needs: [test-backend, test-frontend]

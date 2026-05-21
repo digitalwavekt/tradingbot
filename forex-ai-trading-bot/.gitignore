@@ -1,37 +1,87 @@
 # Dependencies
 node_modules/
-package-lock.json
-yarn.lock
+**/node_modules/
 
-# Environment
+# Environment and secrets
 .env
 .env.local
+.env.development
+.env.production
+.env.test
 .env.*.local
+!.env.example
+!**/.env.example
 
-# Logs
+# Logs and runtime output
 logs/
+**/logs/
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pm2.log
+*.pid
 
-# Build
+# Build output and framework caches
 .next/
+**/.next/
+out/
 dist/
 build/
+.turbo/
+**/.turbo/
+.vercel/
+**/.vercel/
+coverage/
+**/coverage/
+.nyc_output/
+**/.nyc_output/
+tsconfig.tsbuildinfo
+**/*.tsbuildinfo
 
-# IDE
+# Local databases, queues, and cache files
+*.sqlite
+*.sqlite3
+*.db
+dump.rdb
+redis-data/
+tmp/
+temp/
+cache/
+**/tmp/
+**/temp/
+**/cache/
+
+# Certificates and private keys
+deployment/ssl/*
+!deployment/ssl/.gitkeep
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
-# OS
-.DS_Store
-Thumbs.db
+# Optional package managers not used by this repo
+yarn.lock
+pnpm-lock.yaml
 
-# Testing
-coverage/
-.nyc_output/
-
-# Temporary
-tmp/
-temp/
+# Local-only operational notes generated during hardening
+/DEPLOYMENT.md
+/DHAN_INTEGRATION.md
+/ENVIRONMENT_VARIABLES.md
+/INCIDENT_RESPONSE.md
+/LIVE_TRADING_SAFETY_CHECKLIST.md
+/PAPER_TRADING_GUIDE.md
+/SECURITY.md

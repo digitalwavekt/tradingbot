@@ -24,6 +24,7 @@ const modeStyles: Record<TradingMode, string> = {
   PAPER: 'border-blue-400/30 bg-blue-400/10 text-blue-300',
   DEMO: 'border-violet-400/30 bg-violet-400/10 text-violet-300',
   HUMAN_APPROVAL: 'border-amber-400/30 bg-amber-400/10 text-amber-300',
+  LIVE_MANUAL: 'border-orange-400/30 bg-orange-400/10 text-orange-300',
   LIVE_AUTO: 'border-red-400/30 bg-red-400/10 text-red-300',
 };
 
@@ -32,6 +33,7 @@ const modeLabel: Record<TradingMode, string> = {
   PAPER: 'Paper Trading',
   DEMO: 'Demo Mode',
   HUMAN_APPROVAL: 'Human Approval',
+  LIVE_MANUAL: 'Live Manual',
   LIVE_AUTO: 'Live Trading',
 };
 
@@ -61,6 +63,7 @@ export default function DashboardPage() {
     }
   };
 
+  const currentMode = dashboardData?.currentMode || dashboardData?.botMode || 'LEARNING';
   const pnl = dashboardData?.today?.pnl || 0;
   const pnlPositive = pnl >= 0;
 
@@ -84,7 +87,7 @@ export default function DashboardPage() {
     {
       label: 'Open Positions',
       value: `${dashboardData?.account?.openPositions || 0}`,
-      detail: `Max ${dashboardData?.account?.openPositions || 0}/3 used`,
+      detail: `${dashboardData?.account?.openPositions || 0} currently open`,
       icon: BarChart3,
       tone: 'text-sky-400',
       bgTone: 'bg-sky-500/10',
@@ -124,12 +127,12 @@ export default function DashboardPage() {
       </div>
 
       {/* Mode Banner */}
-      <div className={`mb-6 rounded-xl border p-4 ${modeStyles[dashboardData?.currentMode || 'LEARNING']}`}>
+      <div className={`mb-6 rounded-xl border p-4 ${modeStyles[currentMode]}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Shield className="h-5 w-5" />
             <div>
-              <p className="text-sm font-semibold">{modeLabel[dashboardData?.currentMode || 'LEARNING']}</p>
+              <p className="text-sm font-semibold">{modeLabel[currentMode]}</p>
               <p className="text-xs opacity-80">
                 Live trading: {dashboardData?.isLiveEnabled ? 'Unlocked' : 'Locked'}
               </p>

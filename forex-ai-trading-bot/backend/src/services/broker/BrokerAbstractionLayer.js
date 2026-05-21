@@ -2,6 +2,7 @@ const { createBrokerAdapter } = require('../../broker');
 const { Trade } = require('../../models');
 const PaperExecutionService = require('../../execution/paper/PaperExecutionService');
 const { generateId } = require('../../utils/helpers');
+const tradingSafety = require('../trading/TradingSafetyService');
 
 class BrokerAbstractionLayer {
   constructor() {
@@ -35,15 +36,28 @@ class BrokerAbstractionLayer {
   }
 
   async executeTrade(order, mode = 'PAPER') {
-    const correlationId = order.correlationId || `${order.signalId || generateId()}:${mode}:${order.pair}:${order.direction}`;
+    const normalizedMode = tradingSafety.normalizeMode(mode);
+    const safety = await tradingSafety.validateBeforeOrder(order, normalizedMode);
+    if (!safety.allowed) {
+      throw new Error(`Order blocked by safety checks: ${safety.reasons.join('; ')}`);
+    }
 
-    if (mode === 'PAPER' || mode === 'DEMO') {
+    const normalizedOrder = {
+      ...order,
+      ...(safety.instrument || {}),
+      symbol: safety.instrument?.symbol || order.symbol || order.pair,
+      exchangeSegment: safety.instrument?.exchangeSegment || order.exchangeSegment || 'NSE_EQ',
+      transactionType: order.transactionType || order.direction,
+      quantity: order.quantity || order.positionSize,
+      validity: order.validity || 'DAY'
+    };
+
+    const correlationId = normalizedOrder.correlationId || `${normalizedOrder.signalId || generateId()}:${normalizedMode}:${normalizedOrder.symbol}:${normalizedOrder.transactionType}`;
+
+    if (normalizedMode === 'PAPER') {
       const result = await this.paper.placeOrder({
-        ...order,
+        ...normalizedOrder,
         correlationId,
-        symbol: order.symbol || order.pair,
-        transactionType: order.direction,
-        quantity: order.quantity || order.positionSize,
         mode: 'PAPER'
       });
 
@@ -67,12 +81,9 @@ class BrokerAbstractionLayer {
     }
 
     const result = await broker.placeOrder({
-      ...order,
+      ...normalizedOrder,
       correlationId,
-      symbol: order.symbol || order.pair,
-      transactionType: order.direction,
-      quantity: order.quantity || order.positionSize,
-      mode
+      mode: normalizedMode
     });
 
     return {
@@ -89,23 +100,37 @@ class BrokerAbstractionLayer {
     const trade = await Trade.findOne({ tradeId });
     if (!trade) throw new Error(`Trade not found: ${tradeId}`);
 
-    if (mode === 'PAPER' || mode === 'DEMO') {
+    const normalizedMode = tradingSafety.normalizeMode(mode);
+    if (normalizedMode === 'PAPER') {
       return this.paper.closeTrade(trade, reason);
     }
 
     const broker = this.getActiveBroker();
-    if (!trade.brokerOrderId && !trade.brokerTicket) {
-      throw new Error('Live trade is missing broker order id');
+    if (typeof broker.placeOrder !== 'function') {
+      throw new Error('Active broker does not support square-off order placement');
     }
-    if (typeof broker.cancelOrder !== 'function') {
-      throw new Error('Active broker does not support close/cancel');
-    }
-    await broker.cancelOrder(trade.brokerOrderId || trade.brokerTicket);
+    const transactionType = trade.direction === 'BUY' ? 'SELL' : 'BUY';
+    const squareOff = {
+      symbol: trade.symbol || trade.pair,
+      securityId: trade.securityId,
+      exchangeSegment: trade.exchangeSegment || 'NSE_EQ',
+      transactionType,
+      quantity: trade.quantity || trade.positionSize,
+      productType: trade.productType || 'INTRADAY',
+      orderType: 'MARKET',
+      validity: 'DAY',
+      correlationId: `SQUAREOFF:${trade.tradeId}:${Date.now()}`,
+      stopLoss: trade.stopLoss,
+      adminApproved: true,
+      mode: normalizedMode
+    };
+    const result = await broker.placeOrder(squareOff);
     return {
       broker: this.activeBroker.toLowerCase(),
       exitPrice: trade.entryPrice,
       pnl: 0,
-      reason
+      reason,
+      raw: result
     };
   }
 }

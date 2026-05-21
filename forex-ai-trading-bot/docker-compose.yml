@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: indian-market-ai-backend
     restart: unless-stopped
-    ports:
-      - "5000:5000"
+    expose:
+      - "5000"
     environment:
       - NODE_ENV=production
       - PORT=5000
@@ -55,8 +55,8 @@ services:
     image: redis:7-alpine
     container_name: indian-market-ai-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
     volumes:
       - redis-data:/data
     networks:

@@ -34,10 +34,18 @@ router.get('/', async (req, res) => {
 
     const overall = Object.values(checks).every(c => c.status === 'HEALTHY') ? 'HEALTHY' : 'DEGRADED';
 
+    const components = Object.entries(checks).map(([component, check]) => ({
+      component: component.toUpperCase(),
+      status: check.status === 'HEALTHY' ? 'healthy' : check.status === 'DOWN' ? 'critical' : 'warning',
+      latency: check.latency,
+      lastChecked: new Date().toISOString()
+    }));
+
     res.json({
       status: overall,
       timestamp: new Date().toISOString(),
       checks,
+      components,
       brokers: brokerHealth
     });
   } catch (error) {

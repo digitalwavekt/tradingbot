@@ -7,41 +7,39 @@ const {
   roundToDecimals
 } = require('../src/utils/helpers');
 
-describe('forex helpers', () => {
-  test('uses 0.0001 pip value for non-JPY pairs and 0.01 for JPY pairs', () => {
-    expect(getPipValue('EUR/USD')).toBe(0.0001);
-    expect(getPipValue('USD/JPY')).toBe(0.01);
+describe('Indian market helpers', () => {
+  test('rejects forex pairs and uses tick value for Indian symbols', () => {
+    expect(() => getPipValue('EUR/USD')).toThrow('Forex pairs are not supported');
+    expect(getPipValue('RELIANCE')).toBe(0.05);
   });
 
-  test('converts between price movement and pips', () => {
-    expect(priceToPips(0.0025, 'EUR/USD')).toBeCloseTo(25);
-    expect(pipsToPrice(25, 'EUR/USD')).toBeCloseTo(0.0025);
-    expect(priceToPips(0.25, 'USD/JPY')).toBeCloseTo(25);
+  test('converts between price movement and ticks', () => {
+    expect(priceToPips(2.5, 'RELIANCE')).toBeCloseTo(50);
+    expect(pipsToPrice(50, 'RELIANCE')).toBeCloseTo(2.5);
   });
 
   test('calculates risk-based position size', () => {
     const result = calculatePositionSize({
       accountBalance: 100000,
       riskPercent: 1,
-      stopLossPips: 50,
-      pipValue: 10,
-      pair: 'EUR/USD',
-      leverage: 50
+      entryPrice: 2500,
+      stopLoss: 2450,
+      lotSize: 1
     });
 
     expect(result).toEqual({
-      lotSize: 2,
+      quantity: 20,
+      lotSize: 1,
       riskAmount: 1000,
-      marginRequired: 4000,
-      riskPerPip: 20
+      marginRequired: 50000,
+      riskPerShare: 50
     });
   });
 
-  test('detects weekend market closures around forex rollover', () => {
-    expect(isMarketOpen('EUR/USD', new Date('2026-05-22T21:59:00Z'))).toBe(true);
-    expect(isMarketOpen('EUR/USD', new Date('2026-05-22T22:00:00Z'))).toBe(false);
-    expect(isMarketOpen('EUR/USD', new Date('2026-05-24T21:59:00Z'))).toBe(false);
-    expect(isMarketOpen('EUR/USD', new Date('2026-05-24T22:00:00Z'))).toBe(true);
+  test('detects NSE market hours', () => {
+    expect(isMarketOpen('RELIANCE', new Date('2026-05-21T04:30:00Z'))).toBe(true);
+    expect(isMarketOpen('RELIANCE', new Date('2026-05-21T10:31:00Z'))).toBe(false);
+    expect(isMarketOpen('RELIANCE', new Date('2026-05-23T04:30:00Z'))).toBe(false);
   });
 
   test('rounds numeric values to requested decimals', () => {

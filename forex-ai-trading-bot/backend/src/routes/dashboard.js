@@ -26,6 +26,7 @@ router.get('/overview', authenticate, async (req, res) => {
 
     res.json({
       botMode: config?.mode || 'LEARNING',
+      currentMode: config?.mode || 'LEARNING',
       killSwitchActive: config?.killSwitchTriggered || false,
       killSwitchReason: config?.killSwitchReason || null,
       isLiveEnabled: config?.isLiveTradingEnabled || false,
@@ -55,11 +56,14 @@ router.get('/overview', authenticate, async (req, res) => {
 
 router.get('/market-overview', authenticate, async (req, res) => {
   try {
-    const pairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'NZD/USD', 'EUR/GBP'];
+    const config = await BotConfig.findOne().sort({ updatedAt: -1 });
+    const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY', 'NIFTY', 'BANKNIFTY'];
     const marketData = [];
 
-    for (const pair of pairs) {
-      const latest = await MarketData.findOne({ pair }).sort({ timestamp: -1 });
+    for (const symbol of symbols) {
+      const latest = await MarketData.findOne({
+        $or: [{ symbol }, { pair: symbol }]
+      }).sort({ timestamp: -1 });
       if (latest) marketData.push(latest);
     }
 

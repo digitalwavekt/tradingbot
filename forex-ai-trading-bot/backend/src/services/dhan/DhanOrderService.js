@@ -1,6 +1,7 @@
 const DhanApiClient = require('./DhanApiClient');
 const orderIntentService = require('../../execution/orders/OrderIntentService');
 const { ORDER_STATES } = require('../../execution/orders/OrderStateMachine');
+const tradingSafety = require('../trading/TradingSafetyService');
 
 class DhanOrderService {
   constructor(config = {}) {
@@ -10,7 +11,19 @@ class DhanOrderService {
 
   async placeOrder(order) {
     if (!order.correlationId) throw new Error('correlationId/idempotency key is required');
-    const { intent, duplicate } = await orderIntentService.createIntent({ ...order, broker: 'dhan' });
+    const mode = tradingSafety.normalizeMode(order.mode || 'LIVE_MANUAL');
+    const safety = await tradingSafety.validateBeforeOrder(order, mode);
+    if (!safety.allowed) throw new Error(`Dhan order blocked by safety checks: ${safety.reasons.join('; ')}`);
+
+    const safeOrder = {
+      ...order,
+      ...(safety.instrument || {}),
+      symbol: safety.instrument?.symbol || order.symbol,
+      securityId: safety.instrument?.securityId || order.securityId,
+      exchangeSegment: safety.instrument?.exchangeSegment || order.exchangeSegment || 'NSE_EQ',
+      mode
+    };
+    const { intent, duplicate } = await orderIntentService.createIntent({ ...safeOrder, broker: 'dhan' });
     if (duplicate && intent.brokerOrderId) {
       return { duplicate: true, orderId: intent.brokerOrderId, status: intent.status };
     }
@@ -18,9 +31,10 @@ class DhanOrderService {
       return { duplicate: true, orderId: intent.brokerOrderId, status: intent.status };
     }
 
-    const payload = this.toDhanOrder(order);
-    await orderIntentService.transition(intent, ORDER_STATES.RISK_APPROVED, 'risk_approved_before_broker_submit');
-    await orderIntentService.transition(intent, ORDER_STATES.SUBMITTING, 'submitting_to_dhan', {
+    const payload = this.toDhanOrder(safeOrder);
+    await orderIntentService.transition(intent, ORDER_STATES.RISK_CHECK_PASSED, 'risk_approved_before_broker_submit');
+    await orderIntentService.transition(intent, ORDER_STATES.APPROVED, 'approved_for_dhan_submit');
+    await orderIntentService.transition(intent, ORDER_STATES.SENT_TO_BROKER, 'submitting_to_dhan', {
       rawRequest: payload,
       attempts: (intent.attempts || 0) + 1,
       lastSubmittedAt: new Date()
@@ -28,13 +42,17 @@ class DhanOrderService {
 
     try {
       const response = await this.client.request('post', '/orders', payload);
-      await orderIntentService.transition(intent, ORDER_STATES.SUBMITTED, 'dhan_order_submitted', {
+      await orderIntentService.transition(intent, ORDER_STATES.OPEN, 'dhan_order_submitted', {
         brokerOrderId: response.orderId,
         rawResponse: response
       });
       return response;
     } catch (error) {
       await orderIntentService.transition(intent, ORDER_STATES.FAILED, 'dhan_order_submit_failed', {
+        brokerErrorCode: error.statusCode ? String(error.statusCode) : undefined,
+        brokerMessage: error.message,
+        failedReason: 'broker_submit_failed',
+        retryEligible: Boolean(error.statusCode && error.statusCode >= 500),
         error: { message: error.message, statusCode: error.statusCode, details: error.details }
       });
       throw error;

@@ -25,11 +25,12 @@ class PaperExecutionService {
       return { duplicate: true, orderId: intent.brokerOrderId, status: intent.status };
     }
 
-    await orderIntentService.transition(intent, ORDER_STATES.RISK_APPROVED, 'paper_order_risk_approved');
-    await orderIntentService.transition(intent, ORDER_STATES.SUBMITTING, 'paper_order_queued', {
+    await orderIntentService.transition(intent, ORDER_STATES.RISK_CHECK_PASSED, 'paper_order_risk_approved');
+    await orderIntentService.transition(intent, ORDER_STATES.APPROVED, 'paper_order_queued', {
       attempts: (intent.attempts || 0) + 1,
       lastSubmittedAt: new Date()
     });
+    await orderIntentService.transition(intent, ORDER_STATES.SENT_TO_BROKER, 'paper_order_sent_to_virtual_broker');
 
     await new Promise(resolve => setTimeout(resolve, this.latencyMs));
 
@@ -38,6 +39,9 @@ class PaperExecutionService {
     await orderIntentService.transition(intent, ORDER_STATES.FILLED, 'paper_order_filled', {
       brokerOrderId,
       rawResponse: fill,
+      averagePrice: fill.fillPrice,
+      filledQuantity: fill.filledQuantity,
+      remainingQuantity: 0,
       lastReconciledAt: new Date()
     });
 
@@ -57,7 +61,7 @@ class PaperExecutionService {
     const slippage = entry * (this.defaultSlippageBps / 10000);
     const fillPrice = side === 'BUY' ? entry + slippage : entry - slippage;
     return {
-      fillPrice: Number(fillPrice.toFixed(5)),
+      fillPrice: Number(fillPrice.toFixed(2)),
       requestedPrice: entry,
       slippage,
       filledQuantity: Number(order.quantity || order.positionSize || 0),

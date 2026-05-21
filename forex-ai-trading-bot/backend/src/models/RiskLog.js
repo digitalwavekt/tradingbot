@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const riskLogSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['TRADE_CHECK', 'DAILY_LIMIT', 'WEEKLY_LIMIT', 'MONTHLY_LIMIT', 'DRAWDOWN', 'MARGIN', 'VOLATILITY', 'SPREAD', 'SLIPPAGE', 'NEWS', 'API_LATENCY', 'BROKER_HEALTH', 'POSITION_SIZE', 'CORRELATION', 'KILL_SWITCH'],
+    enum: ['TRADE_CHECK', 'ORDER_REJECTED', 'DAILY_LIMIT', 'WEEKLY_LIMIT', 'MONTHLY_LIMIT', 'DRAWDOWN', 'MARGIN', 'VOLATILITY', 'SPREAD', 'SLIPPAGE', 'NEWS', 'API_LATENCY', 'BROKER_HEALTH', 'POSITION_SIZE', 'CORRELATION', 'KILL_SWITCH'],
     required: true
   },
   level: {
@@ -15,13 +15,7 @@ const riskLogSchema = new mongoose.Schema({
   tradeId: String,
   signalId: String,
 
-  details: {
-    checkName: String,
-    value: mongoose.Schema.Types.Mixed,
-    threshold: mongoose.Schema.Types.Mixed,
-    passed: Boolean,
-    message: String
-  },
+  details: mongoose.Schema.Types.Mixed,
 
   accountSnapshot: {
     balance: Number,

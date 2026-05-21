@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const botConfigSchema = new mongoose.Schema({
   mode: {
     type: String,
-    enum: ['LEARNING', 'PAPER', 'HUMAN_APPROVAL', 'LIVE_AUTO'],
+    enum: ['LEARNING', 'PAPER', 'LIVE_MANUAL', 'LIVE_AUTO'],
     default: 'LEARNING'
   },
   isLiveTradingEnabled: {
@@ -88,21 +88,19 @@ const botConfigSchema = new mongoose.Schema({
   },
 
   // Trade Settings
-  defaultLeverage: {
-    type: Number,
-    default: 30,
-    min: 1,
-    max: 500
-  },
-  maxLeverage: {
-    type: Number,
-    default: 50,
-    min: 1,
-    max: 500
-  },
-  allowedPairs: {
+  allowedSymbols: {
     type: [String],
-    default: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'NZD/USD', 'EUR/GBP']
+    default: ['NIFTY', 'BANKNIFTY', 'RELIANCE', 'TCS', 'INFY']
+  },
+  allowedSegments: {
+    type: [String],
+    default: ['NSE_EQ', 'BSE_EQ', 'NSE_FNO']
+  },
+  maxCapitalPerTradePercent: {
+    type: Number,
+    default: 10,
+    min: 1,
+    max: 25
   },
 
   // News Settings

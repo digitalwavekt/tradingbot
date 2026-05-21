@@ -1,15 +1,16 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const Joi = require('joi');
 const router = express.Router();
 const { User, AuditLog } = require('../models');
 const logger = require('../utils/logger');
 const { authenticate, authorize } = require('../middleware/auth');
-
-const JWT_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = '1h';
-const REFRESH_EXPIRES_IN = '7d';
+const {
+  issueLoginTokens,
+  rotateRefreshToken,
+  revokeRefreshToken,
+  revokeAllUserTokens,
+  publicUser
+} = require('../utils/tokenService');
 
 const loginSchema = Joi.object({
   email: Joi.string().email().required(),
@@ -27,7 +28,9 @@ const registerSchema = Joi.object({
   role: Joi.string().valid('admin', 'subadmin', 'user', 'auditor').optional()
 });
 
-router.post('/register', authenticate, authorize(['admin']), async (req, res) => {
+const publicRegisterSchema = registerSchema.fork(['role'], schema => schema.forbidden());
+
+router.post('/register', authenticate, authorize(['super_admin', 'admin']), async (req, res) => {
   try {
     const { error } = registerSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.details[0].message });
@@ -46,10 +49,36 @@ router.post('/register', authenticate, authorize(['admin']), async (req, res) =>
 
     res.status(201).json({
       message: 'User created',
-      user: { id: user._id, email: user.email, name: user.name, role: user.role }
+      user: publicUser(user)
     });
   } catch (error) {
     logger.error(`Registration error: ${error.message}`);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+router.post('/public-register', async (req, res) => {
+  try {
+    const { error } = publicRegisterSchema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.details[0].message });
+
+    const { email, password, name } = req.body;
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(409).json({ error: 'User already exists' });
+
+    const user = await User.create({ email, password, name, role: 'user' });
+    await AuditLog.create({
+      action: 'USER_SELF_REGISTER',
+      userId: user._id,
+      userEmail: user.email,
+      details: { role: 'user' },
+      severity: 'INFO',
+      ipAddress: req.ip
+    });
+
+    res.status(201).json({ message: 'User created', user: publicUser(user) });
+  } catch (error) {
+    logger.error(`Public registration error: ${error.message}`);
     res.status(500).json({ error: 'Registration failed' });
   }
 });
@@ -83,14 +112,7 @@ router.post('/login', async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      JWT_SECRET, { expiresIn: JWT_EXPIRES_IN }
-    );
-    const refreshToken = jwt.sign(
-      { userId: user._id, type: 'refresh' },
-      JWT_REFRESH_SECRET, { expiresIn: REFRESH_EXPIRES_IN }
-    );
+    const { accessToken, refreshToken } = await issueLoginTokens(user);
 
     await AuditLog.create({
       action: 'LOGIN', userId: user._id, userEmail: user.email,
@@ -98,8 +120,10 @@ router.post('/login', async (req, res) => {
     });
 
     res.json({
-      token, refreshToken,
-      user: { id: user._id, email: user.email, name: user.name, role: user.role }
+      token: accessToken,
+      accessToken,
+      refreshToken,
+      user: publicUser(user)
     });
   } catch (error) {
     logger.error(`Login error: ${error.message}`);
@@ -111,15 +135,13 @@ router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) return res.status(400).json({ error: 'Refresh token required' });
-    const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-    if (decoded.type !== 'refresh') return res.status(403).json({ error: 'Invalid token type' });
-    const user = await User.findById(decoded.userId);
-    if (!user || !user.isActive) return res.status(403).json({ error: 'User inactive' });
-    const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      JWT_SECRET, { expiresIn: JWT_EXPIRES_IN }
-    );
-    res.json({ token });
+    const rotated = await rotateRefreshToken(refreshToken);
+    res.json({
+      token: rotated.accessToken,
+      accessToken: rotated.accessToken,
+      refreshToken: rotated.refreshToken,
+      user: publicUser(rotated.user)
+    });
   } catch (error) {
     res.status(403).json({ error: 'Invalid refresh token' });
   }
@@ -128,14 +150,20 @@ router.post('/refresh', async (req, res) => {
 router.get('/me', authenticate, async (req, res) => {
   res.json({
     user: {
-      id: req.user._id, email: req.user.email,
-      name: req.user.name, role: req.user.role, lastLogin: req.user.lastLogin
+      id: req.user.id,
+      _id: req.user._id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      lastLogin: req.user.lastLogin,
+      isActive: req.user.isActive
     }
   });
 });
 
 router.post('/logout', authenticate, async (req, res) => {
   try {
+    await revokeRefreshToken(req.body?.refreshToken, 'logout');
     await AuditLog.create({
       action: 'LOGOUT',
       userId: req.user._id,
@@ -147,6 +175,23 @@ router.post('/logout', authenticate, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+router.post('/logout-all', authenticate, async (req, res) => {
+  try {
+    await revokeAllUserTokens(req.user.id, 'logout_all');
+    await AuditLog.create({
+      action: 'LOGOUT_ALL',
+      userId: req.user._id,
+      userEmail: req.user.email,
+      details: { success: true },
+      severity: 'INFO',
+      ipAddress: req.ip
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Logout all failed' });
   }
 });
 

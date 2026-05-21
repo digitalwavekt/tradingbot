@@ -46,13 +46,22 @@ router.put('/config', authenticate, authorize(['admin']), async (req, res) => {
 router.post('/mode', authenticate, authorize(['admin']), async (req, res) => {
   try {
     const { mode } = req.body;
-    const validModes = ['LEARNING', 'PAPER', 'DEMO', 'HUMAN_APPROVAL', 'LIVE_AUTO'];
+    const validModes = ['LEARNING', 'PAPER', 'LIVE_MANUAL', 'LIVE_AUTO'];
     if (!validModes.includes(mode)) {
       return res.status(400).json({ error: 'Invalid mode' });
     }
 
     // Extra validation for LIVE_AUTO
+    if (mode === 'LIVE_AUTO' || mode === 'LIVE_MANUAL') {
+      if (process.env.ALLOW_LIVE_TRADING !== 'true') {
+        return res.status(403).json({ error: 'Live trading is disabled by ALLOW_LIVE_TRADING' });
+      }
+    }
+
     if (mode === 'LIVE_AUTO') {
+      if (process.env.ENABLE_LIVE_AUTO !== 'true') {
+        return res.status(403).json({ error: 'LIVE_AUTO is disabled by ENABLE_LIVE_AUTO' });
+      }
       const account = await BrokerAccount.findOne({ isActive: true });
       const config = await BotConfig.findOne().sort({ updatedAt: -1 });
 

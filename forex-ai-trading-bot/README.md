@@ -10,6 +10,22 @@ Trading and investing carry significant risk. This application does not guarante
 
 This project does not integrate offshore forex brokers or unauthorized forex platforms. The first supported scope is Indian exchange-traded equity/intraday via DhanHQ. Indian exchange-traded currency derivatives may be considered later only if supported by the broker and legally available to the user.
 
+## GitHub Commit Hygiene
+
+Commit source code, tests, docs, Docker/CI config, `package.json`, `package-lock.json`, and `.env.example` files.
+
+Do not commit real secrets or machine-generated files:
+
+- `.env`, `.env.local`, `.env.production`, or any file containing real API keys.
+- `node_modules/`
+- `.next/`, `dist/`, `build/`, `.turbo/`, `.vercel/`
+- `coverage/`, `.nyc_output/`, `*.tsbuildinfo`
+- `logs/`, `*.log`, `*.pid`
+- SSL certificates/private keys such as `*.pem`, `*.key`, `*.p12`, `deployment/ssl/*`
+- Local DB/cache files such as `*.sqlite`, `*.db`, `dump.rdb`, `tmp/`, `cache/`
+
+Required templates like `backend/.env.example` and `frontend/.env.example` are intentionally safe to commit. Real production values must be configured in EC2, Vercel, GitHub Actions secrets, or another secret manager.
+
 ## Safety Model
 
 1. AI is advisory only and returns schema-validated JSON.
@@ -274,3 +290,21 @@ Next:
 - Add AI schema validation service
 - Implement paper trading engine before any live order workflow
 - Add mock Dhan tests and risk tests
+# Production Safety Notice
+
+This repository is being hardened as an Indian/Dhan market AI trading platform. Default deployment must stay in `LEARNING` or `PAPER` mode.
+
+Live trading is disabled by default:
+
+```env
+TRADING_MODE=LEARNING
+ALLOW_LIVE_TRADING=false
+ENABLE_LIVE_AUTO=false
+REQUIRE_ADMIN_APPROVAL=true
+```
+
+Paper trading does not need real funds. Live trading requires funds to be added manually by the user in their Dhan account; the bot must never auto-add money and must never use full account balance.
+
+Keep deployment notes, incident response notes, broker credentials, and live-trading safety checklists in private ops storage, not in the public repository.
+
+AI is an advisory/support engine. All live trades must pass deterministic risk controls.

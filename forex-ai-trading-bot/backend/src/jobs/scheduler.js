@@ -21,13 +21,13 @@ class Scheduler {
         const config = await BotConfig.findOne().sort({ updatedAt: -1 });
         if (!config || config.killSwitchTriggered) return;
 
-        const pairs = config?.allowedPairs || ['EUR/USD', 'GBP/USD', 'USD/JPY'];
-        await marketDataCollector.collectLivePrices(pairs);
+        const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY'];
+        await marketDataCollector.collectLivePrices(symbols);
 
         // Collect candles
-        for (const pair of pairs) {
+        for (const symbol of symbols) {
           for (const tf of ['1m', '5m', '15m']) {
-            await marketDataCollector.collectCandles(pair, tf, 200);
+            await marketDataCollector.collectCandles(symbol, tf, 200);
           }
         }
       } catch (error) {
@@ -50,8 +50,8 @@ class Scheduler {
         const config = await BotConfig.findOne().sort({ updatedAt: -1 });
         if (!config || config.mode === 'LEARNING' || config.killSwitchTriggered) return;
 
-        const pairs = config?.allowedPairs || ['EUR/USD', 'GBP/USD', 'USD/JPY'];
-        await tradeDecisionEngine.runAnalysisCycle(pairs);
+        const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY'];
+        await tradeDecisionEngine.runAnalysisCycle(symbols);
       } catch (error) {
         logger.error(`Trading analysis error: ${error.message}`);
       }

@@ -2,7 +2,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  role: 'admin' | 'subadmin' | 'user';
+  role: 'super_admin' | 'admin' | 'subadmin' | 'user' | 'auditor';
   isActive: boolean;
   lastLogin?: string;
   createdAt: string;
@@ -32,10 +32,11 @@ export interface DashboardData {
   };
   isLiveEnabled: boolean;
   currentMode: TradingMode;
+  botMode?: TradingMode;
   systemHealth: SystemHealth[];
 }
 
-export type TradingMode = 'LEARNING' | 'PAPER' | 'DEMO' | 'HUMAN_APPROVAL' | 'LIVE_AUTO';
+export type TradingMode = 'LEARNING' | 'PAPER' | 'DEMO' | 'HUMAN_APPROVAL' | 'LIVE_MANUAL' | 'LIVE_AUTO';
 
 export interface SystemHealth {
   component: string;
@@ -104,6 +105,8 @@ export interface BacktestResult {
 }
 
 export interface RiskConfig {
+  mode?: TradingMode;
+  currentMode?: TradingMode;
   riskPerTradePercent: number;
   dailyMaxLossPercent: number;
   maxOpenTrades: number;

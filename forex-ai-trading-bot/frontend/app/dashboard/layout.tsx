@@ -47,7 +47,7 @@ export default function DashboardLayout({
     toast.success('Logged out successfully');
   };
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'subadmin';
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'admin' || user?.role === 'subadmin';
 
   return (
     <div className="app-shell flex min-h-screen">

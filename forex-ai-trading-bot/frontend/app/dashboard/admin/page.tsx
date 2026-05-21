@@ -20,13 +20,14 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-const tradingModes: TradingMode[] = ['LEARNING', 'PAPER', 'DEMO', 'HUMAN_APPROVAL', 'LIVE_AUTO'];
+const tradingModes: TradingMode[] = ['LEARNING', 'PAPER', 'LIVE_MANUAL', 'LIVE_AUTO'];
 
 const modeStyles: Record<TradingMode, { bg: string; text: string; border: string; label: string }> = {
   LEARNING: { bg: 'bg-sky-500/10', text: 'text-sky-400', border: 'border-sky-500/20', label: 'Learning' },
   PAPER: { bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/20', label: 'Paper Trading' },
   DEMO: { bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/20', label: 'Demo' },
   HUMAN_APPROVAL: { bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/20', label: 'Human Approval' },
+  LIVE_MANUAL: { bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/20', label: 'Live Manual' },
   LIVE_AUTO: { bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/20', label: 'Live Auto' },
 };
 
@@ -55,7 +56,7 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
-    if (user?.role !== 'admin' && user?.role !== 'subadmin') {
+    if (user?.role !== 'super_admin' && user?.role !== 'admin' && user?.role !== 'subadmin') {
       router.push('/dashboard');
       return;
     }
@@ -191,7 +192,8 @@ export default function AdminPage() {
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {tradingModes.map((mode) => {
                   const style = modeStyles[mode];
-                  const isActive = config && config.isLiveTradingEnabled ? mode === 'LIVE_AUTO' : mode === (config?.currentMode || 'LEARNING');
+                  const currentMode = (config as any)?.currentMode || (config as any)?.mode || 'LEARNING';
+                  const isActive = config && config.isLiveTradingEnabled ? mode === 'LIVE_AUTO' : mode === currentMode;
                   return (
                     <button
                       key={mode}
@@ -214,6 +216,7 @@ export default function AdminPage() {
                         {mode === 'PAPER' && 'Simulate orders & P&L'}
                         {mode === 'DEMO' && 'Demo environment'}
                         {mode === 'HUMAN_APPROVAL' && 'Require manual approval'}
+                        {mode === 'LIVE_MANUAL' && 'Require admin approval'}
                         {mode === 'LIVE_AUTO' && 'Guarded live execution'}
                       </p>
                     </button>

@@ -60,7 +60,8 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   login: async (email, password) => {
     const response = await authAPI.login(email, password);
-    const { token, refreshToken, user } = response.data;
+    const token = response.data.accessToken || response.data.token;
+    const { refreshToken, user } = response.data;
 
     localStorage.setItem('token', token);
     localStorage.setItem('refreshToken', refreshToken);
@@ -129,16 +130,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (!refreshToken) throw new Error('Missing refresh token');
 
     const response = await authAPI.refresh(refreshToken);
-    const { token } = response.data;
+    const token = response.data.accessToken || response.data.token;
+    const nextRefreshToken = response.data.refreshToken || refreshToken;
 
     localStorage.setItem('token', token);
+    if (nextRefreshToken) localStorage.setItem('refreshToken', nextRefreshToken);
     setTokenCookie(token);
 
     set({
       token,
-      refreshToken,
+      refreshToken: nextRefreshToken,
       tokenExpiresAt: getTokenExpiry(token),
-      refreshTokenExpiresAt: getTokenExpiry(refreshToken),
+      refreshTokenExpiresAt: nextRefreshToken ? getTokenExpiry(nextRefreshToken) : null,
       isAuthenticated: true,
       isLoading: false,
     });
