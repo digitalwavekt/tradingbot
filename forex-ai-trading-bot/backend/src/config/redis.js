@@ -1,45 +1,90 @@
 const Redis = require('ioredis');
 const logger = require('../utils/logger');
 
-let redis;
+let redis = null;
 
-const connectRedis = () => {
+const buildRedisOptions = () => ({
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: true,
+  enableOfflineQueue: false,
+  connectTimeout: 10000,
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 300, 3000);
+
+    if (times > 10) {
+      logger.error('Redis retry limit reached. Redis connection stopped.');
+      return null;
+    }
+
+    return delay;
+  }
+});
+
+const connectRedis = async () => {
+  const redisEnabled = process.env.ENABLE_REDIS === 'true';
+
+  if (!redisEnabled) {
+    logger.warn('Redis is disabled. Set ENABLE_REDIS=true for production Redis connection.');
+    redis = null;
+    return null;
+  }
+
+  if (!process.env.REDIS_URL) {
+    throw new Error('REDIS_URL is required when ENABLE_REDIS=true');
+  }
+
   try {
-    redis = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL, {
-      maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      retryStrategy: (times) => Math.min(times * 50, 2000)
-    }) : new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined,
-      maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      }
+    const options = buildRedisOptions();
+
+    redis = new Redis(process.env.REDIS_URL, {
+      ...options,
+      tls: process.env.REDIS_URL.startsWith('rediss://') ? {} : undefined
     });
 
     redis.on('connect', () => {
       logger.info('Redis connected');
     });
 
+    redis.on('ready', () => {
+      logger.info('Redis ready');
+    });
+
     redis.on('error', (err) => {
       logger.error(`Redis error: ${err.message}`);
     });
 
-    redis.on('reconnecting', () => {
-      logger.warn('Redis reconnecting...');
+    redis.on('reconnecting', (delay) => {
+      logger.warn(`Redis reconnecting in ${delay}ms...`);
     });
+
+    redis.on('end', () => {
+      logger.error('Redis connection ended');
+    });
+
+    await redis.ping();
+
+    logger.info('Redis ping successful');
 
     return redis;
   } catch (error) {
+    redis = null;
     logger.error(`Redis connection failed: ${error.message}`);
-    return null;
+    throw error;
   }
 };
 
 const getRedis = () => redis;
 
-module.exports = { connectRedis, getRedis };
+const requireRedis = () => {
+  if (!redis) {
+    throw new Error('Redis is not connected');
+  }
+
+  return redis;
+};
+
+module.exports = {
+  connectRedis,
+  getRedis,
+  requireRedis
+};
