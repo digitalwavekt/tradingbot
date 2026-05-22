@@ -3,28 +3,11 @@ const logger = require('../utils/logger');
 
 let redis = null;
 
-const buildRedisOptions = () => ({
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  enableOfflineQueue: false,
-  connectTimeout: 10000,
-  retryStrategy: (times) => {
-    const delay = Math.min(times * 300, 3000);
-
-    if (times > 10) {
-      logger.error('Redis retry limit reached. Redis connection stopped.');
-      return null;
-    }
-
-    return delay;
-  }
-});
-
 const connectRedis = async () => {
   const redisEnabled = process.env.ENABLE_REDIS === 'true';
 
   if (!redisEnabled) {
-    logger.warn('Redis is disabled. Set ENABLE_REDIS=true for production Redis connection.');
+    logger.warn('Redis disabled. Set ENABLE_REDIS=true to enable Redis.');
     redis = null;
     return null;
   }
@@ -34,10 +17,27 @@ const connectRedis = async () => {
   }
 
   try {
-    const options = buildRedisOptions();
-
     redis = new Redis(process.env.REDIS_URL, {
-      ...options,
+      // Important: do not send commands before connection is ready
+      lazyConnect: true,
+
+      // Keep this true for startup stability. False causes:
+      // "Stream isn't writeable and enableOfflineQueue options is false"
+      enableOfflineQueue: true,
+
+      enableReadyCheck: true,
+      maxRetriesPerRequest: 3,
+      connectTimeout: 15000,
+
+      retryStrategy: (times) => {
+        if (times > 10) {
+          logger.error('Redis retry limit reached. Stopping reconnect attempts.');
+          return null;
+        }
+
+        return Math.min(times * 300, 3000);
+      },
+
       tls: process.env.REDIS_URL.startsWith('rediss://') ? {} : undefined
     });
 
@@ -58,9 +58,10 @@ const connectRedis = async () => {
     });
 
     redis.on('end', () => {
-      logger.error('Redis connection ended');
+      logger.warn('Redis connection ended');
     });
 
+    await redis.connect();
     await redis.ping();
 
     logger.info('Redis ping successful');
