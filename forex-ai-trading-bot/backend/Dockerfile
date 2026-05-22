@@ -1,20 +1,19 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci --only=production
+ENV NODE_ENV=production
 
-# Copy source
+COPY package*.json ./
+RUN npm ci --omit=dev
+
 COPY src/ ./src/
 
-# Create logs directory
-RUN mkdir -p logs
+RUN addgroup -g 1001 -S nodejs \
+  && adduser -S nodejs -u 1001 \
+  && mkdir -p /app/logs \
+  && chown -R nodejs:nodejs /app
 
-# Non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
 USER nodejs
 
 EXPOSE 5000
