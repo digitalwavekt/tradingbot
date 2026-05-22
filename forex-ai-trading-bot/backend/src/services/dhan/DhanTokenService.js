@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { authenticator } = require('otplib');
+const speakeasy = require('speakeasy');
 const { BrokerAccount } = require('../../models');
 const logger = require('../../utils/logger');
 
@@ -33,8 +33,6 @@ class DhanTokenService {
   async getStoredAccount() {
     this.validateBaseConfig();
 
-    // accessToken has select:false in BrokerAccount model,
-    // so we must explicitly select it.
     if (typeof BrokerAccount.findActiveDhanAccountWithToken === 'function') {
       return BrokerAccount.findActiveDhanAccountWithToken(this.clientId);
     }
@@ -62,7 +60,6 @@ class DhanTokenService {
       return this.generateTokenWithTotp();
     }
 
-    // Renew 90 minutes before expiry
     const renewBeforeMs = 90 * 60 * 1000;
 
     if (expiresAt - now > renewBeforeMs) {
@@ -126,7 +123,20 @@ class DhanTokenService {
   async generateTokenWithTotp() {
     this.validateTotpConfig();
 
-    const totp = authenticator.generate(this.totpSecret);
+    const cleanSecret = String(this.totpSecret)
+      .replace(/\s+/g, '')
+      .toUpperCase();
+
+    const totp = speakeasy.totp({
+      secret: cleanSecret,
+      encoding: 'base32',
+      digits: 6,
+      step: 30
+    });
+
+    if (!totp) {
+      throw new Error('Failed to generate TOTP code');
+    }
 
     const url =
       `${this.authBaseUrl}/generateAccessToken` +
