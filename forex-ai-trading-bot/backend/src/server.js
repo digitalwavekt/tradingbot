@@ -35,7 +35,12 @@ const scheduler = require('./jobs/scheduler');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-validateStartupEnv();
+try {
+  validateStartupEnv();
+} catch (error) {
+  console.error(`Startup environment validation failed: ${error.message}`);
+  process.exit(1);
+}
 
 function requestId(req, res, next) {
   req.id = req.headers['x-request-id'] || require('crypto').randomUUID();
@@ -116,8 +121,8 @@ app.use(compression());
 app.use(morgan(':remote-addr :method :url :status :res[content-length] - :response-time ms :req[x-request-id]', {
   stream: { write: msg => logger.info(msg.trim()) }
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '512kb' }));
+app.use(express.urlencoded({ extended: true, limit: '512kb' }));
 app.use(rejectMongoOperators);
 
 // Routes
@@ -153,14 +158,19 @@ app.use((req, res) => {
 async function initializeServices() {
   try {
     await connectDB();
-    connectRedis();
+    await connectRedis();
     await bootstrapEventBus();
     await bootstrapDefaults();
 
     await tradeDecisionEngine.initialize();
     await aiEngine.initialize();
 
-    scheduler.start();
+    if (process.env.ENABLE_SCHEDULER === 'true') {
+      scheduler.start();
+      logger.info('Scheduler enabled');
+    } else {
+      logger.warn('Scheduler disabled. Set ENABLE_SCHEDULER=true to enable background jobs.');
+    }
 
     logger.info('All services initialized successfully');
   } catch (error) {
@@ -191,7 +201,7 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error(`Unhandled Rejection at: ${promise}, reason: ${reason}`);
 });
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, '0.0.0.0', async () => {
   logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
   await initializeServices();
 });

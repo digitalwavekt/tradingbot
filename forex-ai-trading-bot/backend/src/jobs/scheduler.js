@@ -13,6 +13,12 @@ class Scheduler {
 
   start() {
     if (this.isRunning) return;
+
+    if (process.env.ENABLE_SCHEDULER !== 'true') {
+      logger.warn('Scheduler start skipped because ENABLE_SCHEDULER is not true');
+      return;
+    }
+
     this.isRunning = true;
 
     // Market data collection every minute
@@ -22,12 +28,16 @@ class Scheduler {
         if (!config || config.killSwitchTriggered) return;
 
         const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY'];
-        await marketDataCollector.collectLivePrices(symbols);
 
-        // Collect candles
-        for (const symbol of symbols) {
-          for (const tf of ['1m', '5m', '15m']) {
-            await marketDataCollector.collectCandles(symbol, tf, 200);
+        if (process.env.ENABLE_MARKET_SYNC === 'true') {
+          await marketDataCollector.collectLivePrices(symbols);
+        }
+
+        if (process.env.ENABLE_CANDLE_SYNC === 'true') {
+          for (const symbol of symbols) {
+            for (const tf of ['1m', '5m', '15m']) {
+              await marketDataCollector.collectCandles(symbol, tf, 200);
+            }
           }
         }
       } catch (error) {
