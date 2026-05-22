@@ -1,3 +1,4 @@
+const dhanTokenService = require('../services/dhan/DhanTokenService');
 const cron = require('node-cron');
 const logger = require('../utils/logger');
 const marketDataCollector = require('../services/MarketDataCollector');
@@ -66,7 +67,18 @@ class Scheduler {
         logger.error(`Trading analysis error: ${error.message}`);
       }
     }));
+    // Dhan token refresh check every 2 hours
+this.jobs.push(cron.schedule('0 */2 * * *', async () => {
+  try {
+    if (process.env.ENABLE_DHAN_AUTO_TOKEN !== 'true') return;
 
+    await dhanTokenService.getValidToken();
+
+    logger.info('Dhan token auto-check completed');
+  } catch (error) {
+    logger.error(`Dhan token auto-refresh failed: ${error.message}`);
+  }
+}));
     // Health check every minute
     this.jobs.push(cron.schedule('* * * * *', async () => {
       try {

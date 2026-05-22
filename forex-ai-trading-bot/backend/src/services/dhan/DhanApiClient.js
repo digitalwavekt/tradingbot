@@ -33,17 +33,32 @@ class DhanApiClient {
   }
 
   assertConfigured() {
-    if (!this.clientId) throw new Error('DHAN_CLIENT_ID is required');
-    if (!this.accessToken) throw new Error('DHAN_ACCESS_TOKEN is required');
+  if (!this.clientId) throw new Error('DHAN_CLIENT_ID is required');
+
+  if (process.env.ENABLE_DHAN_AUTO_TOKEN !== 'true' && !this.accessToken) {
+    throw new Error('DHAN_ACCESS_TOKEN is required when ENABLE_DHAN_AUTO_TOKEN is not true');
+  }
+}
+
+async getAccessToken() {
+  this.assertConfigured();
+
+  if (process.env.ENABLE_DHAN_AUTO_TOKEN === 'true') {
+    const dhanTokenService = require('./DhanTokenService');
+    return dhanTokenService.getValidToken();
   }
 
-  headers(extra = {}) {
-    this.assertConfigured();
-    return {
-      'access-token': this.accessToken,
-      ...extra
-    };
-  }
+  return this.accessToken;
+}
+
+async headers(extra = {}) {
+  const token = await this.getAccessToken();
+
+  return {
+    'access-token': token,
+    ...extra
+  };
+}
 
   async request(method, url, data, options = {}) {
     const requestId = options.requestId || crypto.randomUUID();
@@ -55,7 +70,7 @@ class DhanApiClient {
         url,
         data,
         params: options.params,
-        headers: this.headers(options.headers)
+        headers: await this.headers(options.headers)
       });
 
       await this.audit('BROKER_RESPONSE', {
