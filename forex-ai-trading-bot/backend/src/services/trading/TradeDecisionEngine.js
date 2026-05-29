@@ -1,6 +1,14 @@
 const logger = require('../../utils/logger');
+const mongoose = require('mongoose');
 const { Signal, BotConfig, Trade, BrokerAccount } = require('../../models');
-const { generateId, calculatePositionSize, getPipValue, priceToPips, pipsToPrice, roundToDecimals } = require('../../utils/helpers');
+const {
+  generateId,
+  calculatePositionSize,
+  getPipValue,
+  priceToPips,
+  roundToDecimals
+} = require('../../utils/helpers');
+
 const riskEngine = require('../risk/RiskEngine');
 const technicalAnalysis = require('../analysis/TechnicalAnalysisEngine');
 const fundamentalAnalysis = require('../analysis/FundamentalAnalysisEngine');
@@ -25,35 +33,32 @@ class TradeDecisionEngine {
     try {
       logger.info(`Starting analysis for ${pair}`);
 
-      // 1. Collect market data
       const marketData = await this.getMarketData(pair);
-
-      // 2. Technical Analysis
       const technical = await technicalAnalysis.analyze(pair);
-
-      // 3. Fundamental Analysis
       const fundamental = await fundamentalAnalysis.analyze(pair);
-
-      // 4. News Analysis
       const news = await this.analyzeNews(pair);
-
-      // 5. AI Reasoning
       const aiResult = await aiEngine.generateMarketSummary(pair, technical, fundamental, news);
 
-      // 6. Build Signal
       const signal = await this.buildSignal(pair, marketData, technical, fundamental, news, aiResult);
 
-      // 7. Risk Validation
-      const riskValidation = await riskEngine.validateTrade(signal, marketData);
+      if (!['BUY', 'SELL'].includes(signal.direction)) {
+        const riskValidation = {
+          passed: false,
+          checks: [],
+          rejectionReasons: [signal.aiAnalysis?.reasonToAvoid || `Signal direction is ${signal.direction}`]
+        };
 
-      // 8. Final Decision
+        const decision = await this.makeFinalDecision(signal, riskValidation);
+        await this.logDecision(decision, signal, riskValidation);
+        return decision;
+      }
+
+      const riskValidation = await riskEngine.validateTrade(signal, marketData);
       const decision = await this.makeFinalDecision(signal, riskValidation);
 
-      // 9. Log everything
       await this.logDecision(decision, signal, riskValidation);
 
       return decision;
-
     } catch (error) {
       logger.error(`Analysis error for ${pair}: ${error.message}`);
       return {
@@ -68,26 +73,56 @@ class TradeDecisionEngine {
 
   async getMarketData(pair) {
     const { MarketData } = require('../../models');
-    const latest = await MarketData.findOne({ pair }).sort({ timestamp: -1 });
 
-    if (!latest) {
-      // Generate mock data for development
+    const latestMarketData = await MarketData.findOne({ pair }).sort({ timestamp: -1 });
+
+    const latestCandle = await mongoose.connection.db.collection('candledatas').findOne(
+      { pair, timeframe: { $in: ['15m', '5m', '1m'] } },
+      { sort: { timestamp: -1 } }
+    );
+
+    const candleClose = Number(latestCandle?.close);
+    const candleHigh = Number(latestCandle?.high);
+    const candleLow = Number(latestCandle?.low);
+
+    const rawBid = Number(latestMarketData?.bid);
+    const rawAsk = Number(latestMarketData?.ask);
+
+    const marketMid = Number.isFinite(rawBid) && Number.isFinite(rawAsk) && rawBid > 0 && rawAsk > 0
+      ? (rawBid + rawAsk) / 2
+      : null;
+
+    const shouldUseCandle = Number.isFinite(candleClose) && candleClose > 0 && (
+      !marketMid ||
+      marketMid < 10 ||
+      Math.abs(marketMid - candleClose) / Math.max(candleClose, 1) > 0.25
+    );
+
+    if (shouldUseCandle) {
+      const spread = Math.max(candleClose * 0.0005, 0.01);
+
       return {
         pair,
-        bid: 1.0850,
-        ask: 1.0852,
-        spread: 0.0002,
+        bid: candleClose - spread / 2,
+        ask: candleClose + spread / 2,
+        close: candleClose,
+        high: Number.isFinite(candleHigh) ? candleHigh : candleClose,
+        low: Number.isFinite(candleLow) ? candleLow : candleClose,
+        spread,
         spreadPips: 2,
-        timestamp: new Date(),
-        session: 'LONDON',
-        volatility: 0.5,
-        volatilityRegime: 'NORMAL',
-        liquidity: 'HIGH',
-        latencyMs: 50
+        timestamp: latestCandle.timestamp || new Date(),
+        session: 'NSE',
+        volatility: latestMarketData?.volatility || 0.5,
+        volatilityRegime: latestMarketData?.volatilityRegime || 'NORMAL',
+        liquidity: latestMarketData?.liquidity || 'HIGH',
+        latencyMs: latestMarketData?.latencyMs || 50,
+        source: latestCandle.source || 'CANDLE_FALLBACK'
       };
     }
 
-    return latest;
+    if (latestMarketData) return latestMarketData;
+
+    throw new Error(`No market/candle data available for ${pair}`);
   }
 
   async analyzeNews(pair) {
@@ -96,12 +131,11 @@ class TradeDecisionEngine {
     const bufferBefore = (this.config?.newsBufferMinutesBefore || 30) * 60 * 1000;
     const bufferAfter = (this.config?.newsBufferMinutesAfter || 60) * 60 * 1000;
 
+    const parts = String(pair || '').split('/');
+    const currencies = [parts[0], parts[1], 'ALL'].filter(Boolean);
+
     const upcomingNews = await NewsEvent.find({
-      $or: [
-        { currency: pair.split('/')[0] },
-        { currency: pair.split('/')[1] },
-        { currency: 'ALL' }
-      ],
+      currency: { $in: currencies },
       scheduledTime: {
         $gte: new Date(now.getTime() - bufferAfter),
         $lte: new Date(now.getTime() + bufferBefore)
@@ -110,11 +144,7 @@ class TradeDecisionEngine {
     }).sort({ scheduledTime: 1 });
 
     const recentNews = await NewsEvent.find({
-      $or: [
-        { currency: pair.split('/')[0] },
-        { currency: pair.split('/')[1] },
-        { currency: 'ALL' }
-      ],
+      currency: { $in: currencies },
       scheduledTime: { $gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
       isStale: false
     }).sort({ scheduledTime: -1 }).limit(10);
@@ -132,96 +162,164 @@ class TradeDecisionEngine {
     };
   }
 
-  async buildSignal(pair, marketData, technical, fundamental, news, aiResult) {
-    const latestPrice = (marketData.bid + marketData.ask) / 2;
-    const tf1h = technical.timeframes['1h'] || technical.timeframes['15m'];
+  getBestTimeframeData(technical) {
+    const timeframes = technical?.timeframes || {};
+    return timeframes['15m'] || timeframes['5m'] || timeframes['1m'] || Object.values(timeframes).find(Boolean);
+  }
 
-    if (!tf1h) {
-      throw new Error('No timeframe data available');
+  getLatestPrice(marketData) {
+    const bid = Number(marketData?.bid);
+    const ask = Number(marketData?.ask);
+    const close = Number(marketData?.close);
+
+    if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) {
+      return (bid + ask) / 2;
     }
 
-    // Determine direction from AI and technical
-    let direction = aiResult.finalRecommendation || 'NO_TRADE';
+    if (Number.isFinite(close) && close > 0) {
+      return close;
+    }
 
-    // Override if technical strongly disagrees
+    return NaN;
+  }
+
+  calculateSignalConfidence(aiResult, technical, fundamental) {
+    const aiConfidence = Number(aiResult?.confidencePercentage);
+    const technicalConfidence = technical?.alignment?.aligned ? 80 : 55;
+
+    const rawFundamentalScore = Number(fundamental?.relativeStrength?.score);
+    const fundamentalConfidence = Number.isFinite(rawFundamentalScore)
+      ? Math.max(40, Math.min(80, Math.abs(rawFundamentalScore) * 10 + 50))
+      : 60;
+
+    const confidence = Number.isFinite(aiConfidence)
+      ? (aiConfidence * 0.55) + (technicalConfidence * 0.30) + (fundamentalConfidence * 0.15)
+      : (technicalConfidence * 0.70) + (fundamentalConfidence * 0.30);
+
+    return Math.max(0, Math.min(100, Math.round(confidence)));
+  }
+
+  async buildSignal(pair, marketData, technical, fundamental, news, aiResult) {
+    const latestPrice = this.getLatestPrice(marketData);
+    const tf = this.getBestTimeframeData(technical);
+
+    if (!tf) throw new Error('No timeframe data available');
+
+    if (!Number.isFinite(latestPrice) || latestPrice <= 0) {
+      throw new Error(`Invalid latest price for ${pair}`);
+    }
+
+    let direction = aiResult?.finalRecommendation || 'NO_TRADE';
+
     const techAlignment = technical.alignment;
     if (techAlignment) {
       if (techAlignment.alignment === 'STRONG_BULLISH' && direction === 'SELL') {
-        direction = 'NO_TRADE'; // Conflict
+        direction = 'NO_TRADE';
       } else if (techAlignment.alignment === 'STRONG_BEARISH' && direction === 'BUY') {
-        direction = 'NO_TRADE'; // Conflict
+        direction = 'NO_TRADE';
       }
     }
 
-    // Calculate levels
-    const atr = tf1h.atr || 0.0010;
-    const pipValue = getPipValue(pair);
-
     let entryPrice = latestPrice;
-    let stopLoss, takeProfit;
+    let stopLoss = null;
+    let takeProfit = null;
+    let riskReward = 0;
+    let positionSize = 0;
+
+    const atr = Number(tf.atr);
+    const safeAtr = Number.isFinite(atr) && atr > 0 ? atr : Math.max(latestPrice * 0.005, 0.01);
+    const minRiskReward = Number(this.config?.minRiskReward || 2);
 
     if (direction === 'BUY') {
-      // Use support or ATR-based stop
-      const support = tf1h.supportResistance?.supports?.[0] || (latestPrice - atr * 1.5);
-      stopLoss = Math.min(support, latestPrice - atr * 1.5);
+      const support = Number(tf.supportResistance?.supports?.[0]);
 
-      // Risk-reward based take profit
+      stopLoss = Number.isFinite(support) && support > 0
+        ? Math.min(support, latestPrice - safeAtr * 1.5)
+        : latestPrice - safeAtr * 1.5;
+
       const risk = latestPrice - stopLoss;
-      takeProfit = latestPrice + (risk * (this.config?.minRiskReward || 2));
+      takeProfit = latestPrice + (risk * minRiskReward);
 
-      // Check resistance
-      const resistance = tf1h.supportResistance?.resistances?.[0];
-      if (resistance && takeProfit > resistance * 1.005) {
-        takeProfit = resistance; // Cap at resistance
+      const resistance = Number(tf.supportResistance?.resistances?.[0]);
+      if (Number.isFinite(resistance) && resistance > latestPrice && takeProfit > resistance * 1.005) {
+        takeProfit = resistance;
       }
     } else if (direction === 'SELL') {
-      const resistance = tf1h.supportResistance?.resistances?.[0] || (latestPrice + atr * 1.5);
-      stopLoss = Math.max(resistance, latestPrice + atr * 1.5);
+      const resistance = Number(tf.supportResistance?.resistances?.[0]);
+
+      stopLoss = Number.isFinite(resistance) && resistance > 0
+        ? Math.max(resistance, latestPrice + safeAtr * 1.5)
+        : latestPrice + safeAtr * 1.5;
 
       const risk = stopLoss - latestPrice;
-      takeProfit = latestPrice - (risk * (this.config?.minRiskReward || 2));
+      takeProfit = latestPrice - (risk * minRiskReward);
 
-      const support = tf1h.supportResistance?.supports?.[0];
-      if (support && takeProfit < support * 0.995) {
+      const support = Number(tf.supportResistance?.supports?.[0]);
+      if (Number.isFinite(support) && support > 0 && support < latestPrice && takeProfit < support * 0.995) {
         takeProfit = support;
       }
     }
 
-    // Round to proper decimals
-    const decimals = pair.includes('JPY') ? 3 : 5;
+    const decimals = latestPrice >= 100 ? 2 : 5;
     entryPrice = roundToDecimals(entryPrice, decimals);
-    stopLoss = roundToDecimals(stopLoss, decimals);
-    takeProfit = roundToDecimals(takeProfit, decimals);
 
-    // Calculate risk-reward
-    const riskAmount = direction === 'BUY' ? entryPrice - stopLoss : stopLoss - entryPrice;
-    const rewardAmount = direction === 'BUY' ? takeProfit - entryPrice : entryPrice - takeProfit;
-    const riskReward = riskAmount > 0 ? rewardAmount / riskAmount : 0;
+    if (['BUY', 'SELL'].includes(direction)) {
+      stopLoss = roundToDecimals(stopLoss, decimals);
+      takeProfit = roundToDecimals(takeProfit, decimals);
 
-    // Calculate position size
-    const account = await BrokerAccount.findOne({ isActive: true });
-    const balance = this.config?.mode === 'PAPER' ? 
-      (account?.paperBalance || 100000) : 
-      (account?.balance || 100000);
+      if (
+        !Number.isFinite(entryPrice) ||
+        !Number.isFinite(stopLoss) ||
+        !Number.isFinite(takeProfit) ||
+        entryPrice <= 0 ||
+        stopLoss <= 0 ||
+        takeProfit <= 0 ||
+        (direction === 'BUY' && !(stopLoss < entryPrice && takeProfit > entryPrice)) ||
+        (direction === 'SELL' && !(stopLoss > entryPrice && takeProfit < entryPrice))
+      ) {
+        logger.warn(`Skipping ${pair}: invalid trade levels`, {
+          direction,
+          entryPrice,
+          stopLoss,
+          takeProfit,
+          latestPrice,
+          atr: safeAtr
+        });
+
+        direction = 'NO_TRADE';
+      }
+    }
 
     const riskPercent = this.config?.riskPerTradePercent || 0.5;
-    const stopLossPips = priceToPips(riskAmount, pair);
 
-    const positionCalc = calculatePositionSize({
-      accountBalance: balance,
-      riskPercent,
-      stopLossPips,
-      pipValue,
-      pair,
-      leverage: this.config?.defaultLeverage || 30
-    });
+    if (['BUY', 'SELL'].includes(direction)) {
+      const riskAmount = direction === 'BUY' ? entryPrice - stopLoss : stopLoss - entryPrice;
+      const rewardAmount = direction === 'BUY' ? takeProfit - entryPrice : entryPrice - takeProfit;
+      riskReward = riskAmount > 0 ? rewardAmount / riskAmount : 0;
 
-    const confidence = Math.min(
-      (aiResult.confidencePercentage || 50),
-      (technical.alignment?.aligned ? 80 : 50),
-      (fundamental.relativeStrength?.score ? Math.abs(fundamental.relativeStrength.score) * 10 + 50 : 50)
-    );
+      const account = await BrokerAccount.findOne({ isActive: true });
+      const balance = this.config?.mode === 'PAPER'
+        ? (account?.paperBalance || Number(process.env.PAPER_TRADING_BALANCE) || 100000)
+        : (account?.balance || 100000);
 
+      const stopLossPips = Math.abs(priceToPips(riskAmount, pair));
+      const pipValue = getPipValue(pair) || 1;
+
+      const positionCalc = calculatePositionSize({
+        accountBalance: balance,
+        riskPercent,
+        stopLossPips,
+        pipValue,
+        pair,
+        leverage: this.config?.defaultLeverage || 1
+      });
+
+      positionSize = Number.isFinite(Number(positionCalc?.lotSize)) && Number(positionCalc.lotSize) > 0
+        ? positionCalc.lotSize
+        : 1;
+    }
+
+    const confidence = this.calculateSignalConfidence(aiResult, technical, fundamental);
     const signalId = generateId();
 
     return {
@@ -233,32 +331,32 @@ class TradeDecisionEngine {
       takeProfit,
       riskReward: Math.round(riskReward * 100) / 100,
       riskPercent,
-      positionSize: positionCalc.lotSize,
-      confidence: Math.round(confidence),
+      positionSize,
+      confidence,
 
       technicalAnalysis: {
-        trend: tf1h.trend,
-        structure: tf1h.structure?.structure,
-        ...tf1h.ema,
-        rsi: tf1h.rsi,
-        macd: tf1h.macd?.macd,
-        macdSignal: tf1h.macd?.signal,
-        atr: tf1h.atr,
-        bollingerUpper: tf1h.bollinger?.upper,
-        bollingerLower: tf1h.bollinger?.lower,
-        supportLevels: tf1h.supportResistance?.supports,
-        resistanceLevels: tf1h.supportResistance?.resistances,
-        fibLevels: tf1h.fibonacci,
+        trend: tf.trend,
+        structure: tf.structure?.structure,
+        ...tf.ema,
+        rsi: tf.rsi,
+        macd: tf.macd?.macd,
+        macdSignal: tf.macd?.signal,
+        atr: tf.atr,
+        bollingerUpper: tf.bollinger?.upper,
+        bollingerLower: tf.bollinger?.lower,
+        supportLevels: tf.supportResistance?.supports,
+        resistanceLevels: tf.supportResistance?.resistances,
+        fibLevels: tf.fibonacci,
         isBreakout: false,
         isFakeBreakout: false,
-        momentum: tf1h.momentum,
-        volatilityRegime: tf1h.volatility?.regime,
-        liquidityZone: tf1h.liquidity?.above ? 'ABOVE' : tf1h.liquidity?.below ? 'BELOW' : 'NEUTRAL',
-        smcOrderBlocks: tf1h.smc?.orderBlocks,
-        smcFVGs: tf1h.smc?.fvgs,
-        smcLiquiditySweep: tf1h.smc?.liquiditySweep,
-        smcBOS: tf1h.smc?.bos,
-        smcCHoCH: tf1h.smc?.choch
+        momentum: tf.momentum,
+        volatilityRegime: tf.volatility?.regime,
+        liquidityZone: tf.liquidity?.above ? 'ABOVE' : tf.liquidity?.below ? 'BELOW' : 'NEUTRAL',
+        smcOrderBlocks: tf.smc?.orderBlocks,
+        smcFVGs: tf.smc?.fvgs,
+        smcLiquiditySweep: tf.smc?.liquiditySweep,
+        smcBOS: tf.smc?.bos,
+        smcCHoCH: tf.smc?.choch
       },
 
       fundamentalAnalysis: {
@@ -284,18 +382,17 @@ class TradeDecisionEngine {
       aiAnalysis: aiResult,
 
       timeframeAlignment: {
-        ...Object.fromEntries(Object.entries(technical.timeframes).map(([k, v]) => [k, v?.trend])),
+        ...Object.fromEntries(Object.entries(technical.timeframes || {}).map(([k, v]) => [k, v?.trend])),
         aligned: technical.alignment?.aligned || false
       },
 
       status: 'PENDING',
       createdAt: new Date(),
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000) // 30 min expiry
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000)
     };
   }
 
   async makeFinalDecision(signal, riskValidation) {
-    // If risk validation failed, NO_TRADE
     if (!riskValidation.passed) {
       return {
         decision: 'NO_TRADE',
@@ -313,9 +410,7 @@ class TradeDecisionEngine {
       };
     }
 
-    // If AI says NO_TRADE or WAIT, respect it
-    if (signal.aiAnalysis?.finalRecommendation === 'NO_TRADE' || 
-        signal.aiAnalysis?.finalRecommendation === 'WAIT') {
+    if (signal.aiAnalysis?.finalRecommendation === 'NO_TRADE' || signal.aiAnalysis?.finalRecommendation === 'WAIT') {
       return {
         decision: 'NO_TRADE',
         pair: signal.pair,
@@ -332,7 +427,6 @@ class TradeDecisionEngine {
       };
     }
 
-    // If confidence too low
     if (signal.confidence < (this.config?.minConfidenceScore || 65)) {
       return {
         decision: 'NO_TRADE',
@@ -350,8 +444,7 @@ class TradeDecisionEngine {
       };
     }
 
-    // If risk-reward too low
-    if (signal.riskReward < (this.config?.minRiskReward || 2)) {
+    if (!Number.isFinite(Number(signal.riskReward)) || Number(signal.riskReward) < (this.config?.minRiskReward || 2)) {
       return {
         decision: 'NO_TRADE',
         pair: signal.pair,
@@ -368,7 +461,6 @@ class TradeDecisionEngine {
       };
     }
 
-    // Check mode
     if (this.config?.mode === 'LEARNING') {
       return {
         decision: 'WAIT',
@@ -386,13 +478,8 @@ class TradeDecisionEngine {
       };
     }
 
-    // Human approval mode
     if (this.config?.mode === 'HUMAN_APPROVAL') {
-      // Save signal for approval
-      await Signal.create({
-        ...signal,
-        status: 'PENDING'
-      });
+      await Signal.create({ ...signal, status: 'PENDING' });
 
       return {
         decision: 'WAIT',
@@ -410,7 +497,6 @@ class TradeDecisionEngine {
       };
     }
 
-    // All checks passed - APPROVED for execution
     return {
       decision: signal.direction,
       pair: signal.pair,
@@ -432,9 +518,29 @@ class TradeDecisionEngine {
       return null;
     }
 
+    if (
+      !Number.isFinite(Number(decision.entry)) ||
+      !Number.isFinite(Number(decision.stopLoss)) ||
+      !Number.isFinite(Number(decision.takeProfit)) ||
+      Number(decision.entry) <= 0 ||
+      Number(decision.stopLoss) <= 0 ||
+      Number(decision.takeProfit) <= 0
+    ) {
+      logger.warn('Trade execution skipped due to invalid levels', {
+        pair: decision.pair,
+        entry: decision.entry,
+        stopLoss: decision.stopLoss,
+        takeProfit: decision.takeProfit
+      });
+      return null;
+    }
+
     try {
-      const mode = this.config?.mode === 'PAPER' ? 'PAPER' : 
-                   this.config?.mode === 'DEMO' ? 'DEMO' : 'LIVE';
+      const mode = this.config?.mode === 'PAPER'
+        ? 'PAPER'
+        : this.config?.mode === 'DEMO'
+          ? 'DEMO'
+          : 'LIVE';
 
       const tradeResult = await brokerLayer.executeTrade({
         pair: decision.pair,
@@ -446,7 +552,6 @@ class TradeDecisionEngine {
         riskPercent: decision.riskPercent
       }, mode);
 
-      // Save trade
       const trade = await Trade.create({
         tradeId: tradeResult.tradeId,
         signalId: decision.signalId,
@@ -465,7 +570,6 @@ class TradeDecisionEngine {
         createdAt: new Date()
       });
 
-      // Update signal status
       await Signal.findOneAndUpdate(
         { signalId: decision.signalId },
         { status: 'EXECUTED' }
@@ -474,7 +578,6 @@ class TradeDecisionEngine {
       logger.info(`Trade executed: ${trade.tradeId} ${decision.pair} ${decision.decision}`);
 
       return trade;
-
     } catch (error) {
       logger.error(`Trade execution failed: ${error.message}`);
       throw error;
@@ -482,14 +585,17 @@ class TradeDecisionEngine {
   }
 
   async logDecision(decision, signal, riskValidation) {
-    // Save signal regardless of outcome
     const existingSignal = await Signal.findOne({ signalId: signal.signalId });
+
     if (!existingSignal) {
       await Signal.create({
         ...signal,
         riskCheck: riskValidation,
-        status: decision.decision === 'BUY' || decision.decision === 'SELL' ? 'APPROVED' : 
-                decision.decision === 'WAIT' ? 'PENDING' : 'REJECTED',
+        status: decision.decision === 'BUY' || decision.decision === 'SELL'
+          ? 'APPROVED'
+          : decision.decision === 'WAIT'
+            ? 'PENDING'
+            : 'REJECTED',
         rejectionReason: decision.rejectionReason || ''
       });
     }
@@ -513,7 +619,6 @@ class TradeDecisionEngine {
           await this.executeApprovedTrade(decision);
         }
 
-        // Small delay between pairs
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     } finally {
