@@ -7,9 +7,24 @@ function toUpper(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function normalizeDate(value) {
+  if (!value) return undefined;
+
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  return String(value).slice(0, 10);
+}
+
+function isValidPositiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+
 function isEquityInstrument(instrument) {
-  const type = toUpper(instrument?.instrument || instrument?.instrumentType);
   const segment = toUpper(instrument?.exchangeSegment);
+  const type = toUpper(instrument?.instrument || instrument?.instrumentType);
 
   return (
     segment === 'NSE_EQ' ||
@@ -19,26 +34,13 @@ function isEquityInstrument(instrument) {
   );
 }
 
-function isValidPrice(value) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0;
-}
-
-function isValidIndianEquityPrice(instrument, value) {
-  if (!isEquityInstrument(instrument)) return isValidPrice(value);
-
-  const n = Number(value);
-  return Number.isFinite(n) && n >= INDIAN_EQUITY_MIN_PRICE;
-}
-
-function normalizeDate(dateValue) {
-  if (!dateValue) return undefined;
-
-  if (dateValue instanceof Date) {
-    return dateValue.toISOString().slice(0, 10);
+function isValidIndianEquityPrice(instrument, price) {
+  if (!isEquityInstrument(instrument)) {
+    return isValidPositiveNumber(price);
   }
 
-  return String(dateValue).slice(0, 10);
+  const n = Number(price);
+  return Number.isFinite(n) && n >= INDIAN_EQUITY_MIN_PRICE;
 }
 
 class DhanHistoricalDataService {
@@ -53,7 +55,8 @@ class DhanHistoricalDataService {
         symbol: toUpper(symbol || opts.symbol),
         securityId: String(opts.securityId),
         exchangeSegment: opts.exchangeSegment || 'NSE_EQ',
-        instrument: opts.instrument || 'EQUITY'
+        instrument: opts.instrument || 'EQUITY',
+        isActive: true
       };
     }
 
@@ -66,18 +69,11 @@ class DhanHistoricalDataService {
       exchangeSegment,
       isActive: true
     }).sort({
-      instrument: 1,
       updatedAt: -1
     });
 
     if (!instrument?.securityId) {
       throw new Error(`Unable to resolve Dhan securityId for ${normalizedSymbol}`);
-    }
-
-    if (exchangeSegment === 'NSE_EQ' && !isEquityInstrument(instrument)) {
-      throw new Error(
-        `Resolved instrument is not NSE equity for ${normalizedSymbol}: ${instrument.instrument}`
-      );
     }
 
     return instrument;
@@ -123,7 +119,7 @@ class DhanHistoricalDataService {
     });
 
     this.validateCandles(candles, instrument, {
-      symbol,
+      symbol: instrument.symbol || symbol,
       endpoint,
       payload
     });
@@ -158,28 +154,25 @@ class DhanHistoricalDataService {
     const low = Array.isArray(data.low) ? data.low : [];
     const close = Array.isArray(data.close) ? data.close : [];
     const volume = Array.isArray(data.volume) ? data.volume : [];
+    const openInterest = Array.isArray(data.open_interest) ? data.open_interest : [];
 
     if (!timestamps.length) {
       return [];
     }
 
-    return timestamps.map((ts, index) => {
-      const timestampNumber = Number(ts);
-
-      return {
-        broker: 'dhan',
-        ...meta,
-        symbol: toUpper(meta.symbol),
-        timestamp: new Date(timestampNumber * 1000),
-        open: Number(open[index]),
-        high: Number(high[index]),
-        low: Number(low[index]),
-        close: Number(close[index]),
-        volume: Number(volume[index] || 0),
-        openInterest: Number(data.open_interest?.[index] || 0),
-        source: 'DHAN'
-      };
-    });
+    return timestamps.map((ts, index) => ({
+      broker: 'dhan',
+      ...meta,
+      symbol: toUpper(meta.symbol),
+      timestamp: new Date(Number(ts) * 1000),
+      open: Number(open[index]),
+      high: Number(high[index]),
+      low: Number(low[index]),
+      close: Number(close[index]),
+      volume: Number(volume[index] || 0),
+      openInterest: Number(openInterest[index] || 0),
+      source: 'DHAN'
+    }));
   }
 
   validateCandles(candles, instrument, context = {}) {
@@ -189,20 +182,20 @@ class DhanHistoricalDataService {
       );
     }
 
-    const invalid = candles.find(candle => {
+    const invalidFormat = candles.find(candle => {
       return (
         !Number.isFinite(candle.timestamp?.getTime?.()) ||
-        !isValidPrice(candle.open) ||
-        !isValidPrice(candle.high) ||
-        !isValidPrice(candle.low) ||
-        !isValidPrice(candle.close) ||
-        candle.high < candle.low
+        !isValidPositiveNumber(candle.open) ||
+        !isValidPositiveNumber(candle.high) ||
+        !isValidPositiveNumber(candle.low) ||
+        !isValidPositiveNumber(candle.close) ||
+        Number(candle.high) < Number(candle.low)
       );
     });
 
-    if (invalid) {
+    if (invalidFormat) {
       throw new Error(
-        `Invalid Dhan candle format for ${context.symbol}: ${JSON.stringify(invalid)}`
+        `Invalid Dhan candle format for ${context.symbol}: ${JSON.stringify(invalidFormat)}`
       );
     }
 
@@ -228,7 +221,7 @@ class DhanHistoricalDataService {
             `low=${badEquityPrice.low}`,
             `close=${badEquityPrice.close}`,
             `timestamp=${badEquityPrice.timestamp?.toISOString?.()}`,
-            'This looks like wrong instrument mapping or corrupted response parsing. Refusing to save.'
+            'This usually means wrong instrument/securityId mapping or corrupted response parsing. Refusing to save.'
           ].join(' ')
         );
       }
