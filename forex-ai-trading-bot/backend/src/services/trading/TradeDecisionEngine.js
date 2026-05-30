@@ -15,6 +15,35 @@ const fundamentalAnalysis = require('../analysis/FundamentalAnalysisEngine');
 const aiEngine = require('../ai/AIReasoningEngine');
 const brokerLayer = require('../broker/BrokerAbstractionLayer');
 
+const INDIAN_EQUITY_SYMBOLS = new Set([
+  'RELIANCE',
+  'TCS',
+  'INFY',
+  'HDFCBANK',
+  'ICICIBANK',
+  'SBIN',
+  'LT',
+  'AXISBANK',
+  'BHARTIARTL',
+  'ITC'
+]);
+
+const MIN_VALID_INDIAN_EQUITY_PRICE = 10;
+
+function isIndianEquity(pair) {
+  return INDIAN_EQUITY_SYMBOLS.has(String(pair || '').toUpperCase());
+}
+
+function isValidIndianEquityPrice(pair, price) {
+  if (!isIndianEquity(pair)) return true;
+  return Number.isFinite(Number(price)) && Number(price) >= MIN_VALID_INDIAN_EQUITY_PRICE;
+}
+
+function getNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 class TradeDecisionEngine {
   constructor() {
     this.isRunning = false;
@@ -74,10 +103,11 @@ class TradeDecisionEngine {
   async getMarketData(pair) {
     const { MarketData } = require('../../models');
 
-    const latestMarketData = await MarketData.findOne({ pair }).sort({ timestamp: -1 });
+    const normalizedPair = String(pair || '').toUpperCase();
+    const latestMarketData = await MarketData.findOne({ pair: normalizedPair }).sort({ timestamp: -1 });
 
     const latestCandle = await mongoose.connection.db.collection('candledatas').findOne(
-      { pair, timeframe: { $in: ['15m', '5m', '1m'] } },
+      { pair: normalizedPair, timeframe: { $in: ['15m', '5m', '1m'] } },
       { sort: { timestamp: -1 } }
     );
 
@@ -92,17 +122,25 @@ class TradeDecisionEngine {
       ? (rawBid + rawAsk) / 2
       : null;
 
-    const shouldUseCandle = Number.isFinite(candleClose) && candleClose > 0 && (
-      !marketMid ||
-      marketMid < 10 ||
-      Math.abs(marketMid - candleClose) / Math.max(candleClose, 1) > 0.25
+    const marketDataLooksValid = isValidIndianEquityPrice(normalizedPair, marketMid);
+    const candleLooksValid = isValidIndianEquityPrice(normalizedPair, candleClose);
+
+    const shouldUseCandle = (
+      Number.isFinite(candleClose) &&
+      candleClose > 0 &&
+      candleLooksValid &&
+      (
+        !marketMid ||
+        !marketDataLooksValid ||
+        Math.abs(marketMid - candleClose) / Math.max(candleClose, 1) > 0.25
+      )
     );
 
     if (shouldUseCandle) {
       const spread = Math.max(candleClose * 0.0005, 0.01);
 
       return {
-        pair,
+        pair: normalizedPair,
         bid: candleClose - spread / 2,
         ask: candleClose + spread / 2,
         close: candleClose,
@@ -120,9 +158,19 @@ class TradeDecisionEngine {
       };
     }
 
+    if (latestMarketData && marketDataLooksValid) {
+      return latestMarketData;
+    }
+
+    if (isIndianEquity(normalizedPair)) {
+      throw new Error(
+        `Invalid Indian equity price for ${normalizedPair}. Market mid=${marketMid}, candle close=${candleClose}. Real Dhan price/candle sync required before PAPER execution.`
+      );
+    }
+
     if (latestMarketData) return latestMarketData;
 
-    throw new Error(`No market/candle data available for ${pair}`);
+    throw new Error(`No market/candle data available for ${normalizedPair}`);
   }
 
   async analyzeNews(pair) {
@@ -199,14 +247,42 @@ class TradeDecisionEngine {
     return Math.max(0, Math.min(100, Math.round(confidence)));
   }
 
+  calculateIndianEquityQuantity({ balance, entryPrice, stopLoss, riskPercent }) {
+    const safeBalance = getNumber(balance, Number(process.env.PAPER_TRADING_BALANCE || 100000));
+    const safeEntry = getNumber(entryPrice, 0);
+    const safeStopLoss = getNumber(stopLoss, 0);
+    const safeRiskPercent = getNumber(riskPercent, 0.5);
+
+    if (safeBalance <= 0 || safeEntry <= 0 || safeStopLoss <= 0) return 0;
+
+    const maxCapitalPerTradePercent = getNumber(this.config?.maxCapitalPerTradePercent, 10);
+    const maxCapital = safeBalance * (maxCapitalPerTradePercent / 100);
+    const qtyByCapital = Math.floor(maxCapital / safeEntry);
+
+    const riskPerShare = Math.abs(safeEntry - safeStopLoss);
+    const maxRiskAmount = safeBalance * (safeRiskPercent / 100);
+    const qtyByRisk = riskPerShare > 0 ? Math.floor(maxRiskAmount / riskPerShare) : 0;
+
+    const qty = Math.max(0, Math.min(qtyByCapital, qtyByRisk));
+
+    return qty;
+  }
+
   async buildSignal(pair, marketData, technical, fundamental, news, aiResult) {
+    const normalizedPair = String(pair || '').toUpperCase();
     const latestPrice = this.getLatestPrice(marketData);
     const tf = this.getBestTimeframeData(technical);
 
     if (!tf) throw new Error('No timeframe data available');
 
     if (!Number.isFinite(latestPrice) || latestPrice <= 0) {
-      throw new Error(`Invalid latest price for ${pair}`);
+      throw new Error(`Invalid latest price for ${normalizedPair}`);
+    }
+
+    if (!isValidIndianEquityPrice(normalizedPair, latestPrice)) {
+      throw new Error(
+        `Invalid Indian equity price for ${normalizedPair}: ${latestPrice}. Real Dhan price/candle sync required before PAPER execution.`
+      );
     }
 
     let direction = aiResult?.finalRecommendation || 'NO_TRADE';
@@ -277,7 +353,7 @@ class TradeDecisionEngine {
         (direction === 'BUY' && !(stopLoss < entryPrice && takeProfit > entryPrice)) ||
         (direction === 'SELL' && !(stopLoss > entryPrice && takeProfit < entryPrice))
       ) {
-        logger.warn(`Skipping ${pair}: invalid trade levels`, {
+        logger.warn(`Skipping ${normalizedPair}: invalid trade levels`, {
           direction,
           entryPrice,
           stopLoss,
@@ -302,21 +378,43 @@ class TradeDecisionEngine {
         ? (account?.paperBalance || Number(process.env.PAPER_TRADING_BALANCE) || 100000)
         : (account?.balance || 100000);
 
-      const stopLossPips = Math.abs(priceToPips(riskAmount, pair));
-      const pipValue = getPipValue(pair) || 1;
+      if (isIndianEquity(normalizedPair)) {
+        positionSize = this.calculateIndianEquityQuantity({
+          balance,
+          entryPrice,
+          stopLoss,
+          riskPercent
+        });
 
-      const positionCalc = calculatePositionSize({
-        accountBalance: balance,
-        riskPercent,
-        stopLossPips,
-        pipValue,
-        pair,
-        leverage: this.config?.defaultLeverage || 1
-      });
+        if (!Number.isFinite(positionSize) || positionSize < 1) {
+          logger.warn(`Skipping ${normalizedPair}: invalid Indian equity quantity`, {
+            balance,
+            entryPrice,
+            stopLoss,
+            riskPercent,
+            positionSize
+          });
 
-      positionSize = Number.isFinite(Number(positionCalc?.lotSize)) && Number(positionCalc.lotSize) > 0
-        ? positionCalc.lotSize
-        : 1;
+          direction = 'NO_TRADE';
+          positionSize = 0;
+        }
+      } else {
+        const stopLossPips = Math.abs(priceToPips(riskAmount, normalizedPair));
+        const pipValue = getPipValue(normalizedPair) || 1;
+
+        const positionCalc = calculatePositionSize({
+          accountBalance: balance,
+          riskPercent,
+          stopLossPips,
+          pipValue,
+          pair: normalizedPair,
+          leverage: this.config?.defaultLeverage || 1
+        });
+
+        positionSize = Number.isFinite(Number(positionCalc?.lotSize)) && Number(positionCalc.lotSize) > 0
+          ? positionCalc.lotSize
+          : 1;
+      }
     }
 
     const confidence = this.calculateSignalConfidence(aiResult, technical, fundamental);
@@ -324,7 +422,7 @@ class TradeDecisionEngine {
 
     return {
       signalId,
-      pair,
+      pair: normalizedPair,
       direction,
       entryPrice,
       stopLoss,
@@ -531,6 +629,15 @@ class TradeDecisionEngine {
         entry: decision.entry,
         stopLoss: decision.stopLoss,
         takeProfit: decision.takeProfit
+      });
+      return null;
+    }
+
+    if (!isValidIndianEquityPrice(decision.pair, Number(decision.entry))) {
+      logger.warn('Trade execution skipped due to invalid Indian equity price', {
+        pair: decision.pair,
+        entry: decision.entry,
+        message: 'Real Dhan price/candle sync required before PAPER execution'
       });
       return null;
     }
