@@ -1,29 +1,30 @@
 const express = require('express');
-const {
-  getWatchlist,
-  addWatchlist,
-  deleteWatchlist,
-  getLtp,
-  getCandles,
-  syncHistorical
-} = require('../controllers/marketController');
-
-const auth = require('../middleware/auth');
+const marketController = require('../controllers/marketController');
+const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Public/health-style market read routes can stay protected or public based on your app.
-// Keeping auth here because watchlist/sync actions are user/admin related.
-router.get('/watchlist', auth, getWatchlist);
-router.post('/watchlist', auth, addWatchlist);
-router.delete('/watchlist/:id', auth, deleteWatchlist);
+function requireHandler(name) {
+  const handler = marketController[name];
 
-router.get('/ltp/:symbol', auth, getLtp);
-router.get('/candles/:symbol', auth, getCandles);
-router.post('/sync-historical', auth, syncHistorical);
+  if (typeof handler !== 'function') {
+    throw new Error(
+      `marketController.${name} is not exported. Available exports: ${Object.keys(marketController).join(', ')}`
+    );
+  }
 
-// Compatibility aliases if frontend/old scripts use these paths
-router.post('/sync-candles', auth, syncHistorical);
-router.post('/candles/sync', auth, syncHistorical);
+  return handler;
+}
+
+router.get('/watchlist', authenticate, requireHandler('getWatchlist'));
+router.post('/watchlist', authenticate, requireHandler('addWatchlist'));
+router.delete('/watchlist/:id', authenticate, requireHandler('deleteWatchlist'));
+
+router.get('/ltp/:symbol', authenticate, requireHandler('getLtp'));
+router.get('/candles/:symbol', authenticate, requireHandler('getCandles'));
+
+router.post('/sync-historical', authenticate, requireHandler('syncHistorical'));
+router.post('/sync-candles', authenticate, requireHandler('syncHistorical'));
+router.post('/candles/sync', authenticate, requireHandler('syncHistorical'));
 
 module.exports = router;

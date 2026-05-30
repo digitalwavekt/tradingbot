@@ -83,3 +83,11 @@ async function syncHistorical(req, res) {
     });
   }
 }
+module.exports = {
+  getWatchlist,
+  addWatchlist,
+  deleteWatchlist,
+  getLtp,
+  getCandles,
+  syncHistorical
+};
