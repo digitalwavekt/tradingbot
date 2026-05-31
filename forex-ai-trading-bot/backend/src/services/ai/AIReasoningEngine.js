@@ -1,3 +1,4 @@
+const https = require('https');
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');
 const { AiAnalysis, BotConfig } = require('../../models');
@@ -15,33 +16,21 @@ function getAiModel(config = {}) {
 
   if (provider === 'gemini') {
     return (
-      config.geminiModel ||
       process.env.GEMINI_MODEL ||
-      'gemini-2.0-flash'
+      config.geminiModel ||
+      config.openaiModel ||
+      'gemini-3.5-flash'
     );
   }
 
   return (
-    config.openaiModel ||
     process.env.OPENAI_MODEL ||
+    config.openaiModel ||
     'gpt-4o-mini'
   );
 }
 
-function createAiClient(provider) {
-  if (provider === 'gemini') {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error('GEMINI_API_KEY is required when AI_PROVIDER=gemini');
-    }
-
-    return new OpenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      baseURL:
-        process.env.GEMINI_BASE_URL ||
-        'https://generativelanguage.googleapis.com/v1beta/openai/'
-    });
-  }
-
+function createOpenAIClient() {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is required when AI_PROVIDER=openai');
   }
@@ -51,22 +40,136 @@ function createAiClient(provider) {
   });
 }
 
+function stripCodeFences(text) {
+  return String(text || '')
+    .trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+}
+
+function extractJsonCandidate(text) {
+  const cleaned = stripCodeFences(text);
+
+  if (!cleaned) return '';
+
+  const objectStart = cleaned.indexOf('{');
+  const objectEnd = cleaned.lastIndexOf('}');
+
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    return cleaned.slice(objectStart, objectEnd + 1).trim();
+  }
+
+  const arrayStart = cleaned.indexOf('[');
+  const arrayEnd = cleaned.lastIndexOf(']');
+
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    return cleaned.slice(arrayStart, arrayEnd + 1).trim();
+  }
+
+  return cleaned;
+}
+
 function safeJsonParse(raw) {
   if (!raw || typeof raw !== 'string') {
     throw new Error('Empty AI response');
   }
 
-  let cleaned = raw.trim();
+  const candidate = extractJsonCandidate(raw);
 
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned
-      .replace(/^```json/i, '')
-      .replace(/^```/i, '')
-      .replace(/```$/i, '')
-      .trim();
+  try {
+    return JSON.parse(candidate);
+  } catch (firstError) {
+    const repaired = candidate
+      .replace(/,\s*}/g, '}')
+      .replace(/,\s*]/g, ']')
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3');
+
+    try {
+      return JSON.parse(repaired);
+    } catch (_) {
+      throw firstError;
+    }
   }
+}
 
-  return JSON.parse(cleaned);
+function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperature, maxOutputTokens }) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      systemInstruction: {
+        parts: [
+          {
+            text: systemPrompt
+          }
+        ]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: userPrompt
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature,
+        maxOutputTokens,
+        responseMimeType: 'application/json'
+      }
+    });
+
+    const req = https.request(
+      {
+        hostname: 'generativelanguage.googleapis.com',
+        path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        }
+      },
+      res => {
+        let data = '';
+
+        res.on('data', chunk => {
+          data += chunk;
+        });
+
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(
+              new Error(`Gemini API ${res.statusCode}: ${data.slice(0, 1000)}`)
+            );
+          }
+
+          try {
+            const json = JSON.parse(data);
+            return resolve(json);
+          } catch (error) {
+            return reject(
+              new Error(`Gemini response parse failed: ${error.message}. Raw: ${data.slice(0, 1000)}`)
+            );
+          }
+        });
+      }
+    );
+
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+function extractGeminiText(response) {
+  const parts = response?.candidates?.[0]?.content?.parts || [];
+  return parts
+    .map(part => part.text || '')
+    .filter(Boolean)
+    .join('\n')
+    .trim();
 }
 
 class AIReasoningEngine {
@@ -74,7 +177,7 @@ class AIReasoningEngine {
     this.client = null;
     this.config = null;
     this.aiProvider = 'gemini';
-    this.aiModel = 'gemini-2.0-flash';
+    this.aiModel = 'gemini-3.5-flash';
   }
 
   async initialize() {
@@ -89,7 +192,15 @@ class AIReasoningEngine {
     this.aiModel = getAiModel(this.config);
 
     try {
-      this.client = createAiClient(this.aiProvider);
+      if (this.aiProvider === 'gemini') {
+        if (!process.env.GEMINI_API_KEY) {
+          throw new Error('GEMINI_API_KEY is required when AI_PROVIDER=gemini');
+        }
+
+        this.client = { provider: 'gemini' };
+      } else {
+        this.client = createOpenAIClient();
+      }
 
       logger.info('AI Reasoning Engine initialized', {
         provider: this.aiProvider,
@@ -101,6 +212,57 @@ class AIReasoningEngine {
     }
   }
 
+  async generateJsonWithAI({ systemPrompt, userPrompt, maxTokens }) {
+    const temperature = Number(this.config?.aiTemperature ?? 0.1);
+    const maxOutputTokens = Number(maxTokens || this.config?.aiMaxTokens || 2000);
+
+    if (this.aiProvider === 'gemini') {
+      const response = await makeGeminiRequest({
+        model: this.aiModel,
+        apiKey: process.env.GEMINI_API_KEY,
+        systemPrompt,
+        userPrompt,
+        temperature,
+        maxOutputTokens
+      });
+
+      const rawText = extractGeminiText(response);
+      const parsed = safeJsonParse(rawText);
+
+      return {
+        rawText,
+        parsed,
+        tokensUsed: response?.usageMetadata?.totalTokenCount || 0
+      };
+    }
+
+    const response = await this.client.chat.completions.create({
+      model: this.aiModel,
+      messages: [
+        {
+          role: 'system',
+          content: systemPrompt
+        },
+        {
+          role: 'user',
+          content: userPrompt
+        }
+      ],
+      temperature,
+      max_tokens: maxOutputTokens,
+      response_format: { type: 'json_object' }
+    });
+
+    const rawText = response.choices?.[0]?.message?.content || '';
+    const parsed = safeJsonParse(rawText);
+
+    return {
+      rawText,
+      parsed,
+      tokensUsed: response.usage?.total_tokens || 0
+    };
+  }
+
   async generateMarketSummary(pair, technicalData, fundamentalData, newsData) {
     try {
       if (!this.client || !this.config?.aiEnabled) {
@@ -109,14 +271,7 @@ class AIReasoningEngine {
 
       const prompt = this.buildAnalysisPrompt(pair, technicalData, fundamentalData, newsData);
 
-      const startTime = Date.now();
-
-      const response = await this.client.chat.completions.create({
-        model: this.aiModel,
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert Indian equity market trading analyst.
+      const systemPrompt = `You are an expert Indian equity market trading analyst.
 
 IMPORTANT RULES:
 - You are ADVISORY ONLY.
@@ -124,40 +279,40 @@ IMPORTANT RULES:
 - You NEVER guarantee profit.
 - You must be conservative.
 - You must always include risk warnings.
-- You must return ONLY a valid JSON object.
-- Do not wrap the JSON in markdown.`
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: this.config.aiTemperature ?? 0.1,
-        max_tokens: this.config.aiMaxTokens || 2000,
-        response_format: { type: 'json_object' }
-      });
+- Return ONLY one valid JSON object.
+- Do not return markdown.
+- Do not return a code block.
+- Do not include any explanation outside JSON.
+- All JSON property names must be double quoted.
+- All string values must be double quoted.
+- finalRecommendation must be one of: BUY, SELL, WAIT, NO_TRADE.
+- sentiment must be one of: BULLISH, BEARISH, NEUTRAL.`;
 
-      const latencyMs = Date.now() - startTime;
-      const rawResponse = response.choices?.[0]?.message?.content || '';
+      const startTime = Date.now();
 
-      let parsedResult;
+      let aiResult;
       try {
-        parsedResult = safeJsonParse(rawResponse);
+        aiResult = await this.generateJsonWithAI({
+          systemPrompt,
+          userPrompt: prompt,
+          maxTokens: this.config.aiMaxTokens || 2000
+        });
       } catch (error) {
         logger.error(`AI response JSON parse error: ${error.message}`);
         return this.generateFallbackSummary(pair, technicalData, fundamentalData, newsData);
       }
 
-      const validated = this.validateAIResponse(parsedResult);
+      const latencyMs = Date.now() - startTime;
+      const validated = this.validateAIResponse(aiResult.parsed);
 
       await AiAnalysis.create({
         analysisId: require('uuid').v4(),
         type: 'FULL_ANALYSIS',
         pair,
         prompt: prompt.substring(0, 500),
-        rawResponse: rawResponse.substring(0, 2000),
+        rawResponse: String(aiResult.rawText || '').substring(0, 2000),
         parsedResult: validated.result,
-        tokensUsed: response.usage?.total_tokens || 0,
+        tokensUsed: aiResult.tokensUsed || 0,
         costUsd: 0,
         latencyMs,
         model: this.aiModel,
@@ -174,7 +329,7 @@ IMPORTANT RULES:
 
   buildAnalysisPrompt(pair, technical, fundamental, news) {
     const tf = technical?.timeframes || {};
-    const latestTF = tf['1h'] || tf['15m'] || Object.values(tf)[0] || {};
+    const latestTF = tf['1h'] || tf['15m'] || tf['5m'] || tf['1m'] || Object.values(tf)[0] || {};
 
     return `Analyze ${pair} for potential Indian market trading opportunity.
 
@@ -199,7 +354,7 @@ NEWS ANALYSIS:
 - Recent High Impact: ${news?.recentEvents?.filter(e => e.impact === 'HIGH').length || 0}
 - News Safe: ${news?.newsSafe || false}
 
-Return only valid JSON with this exact structure:
+Return ONLY valid JSON with this exact structure and no markdown:
 {
   "marketSummary": "Brief market overview",
   "technicalExplanation": "Technical analysis explanation",
@@ -218,7 +373,7 @@ Return only valid JSON with this exact structure:
 }`;
   }
 
-  validateAIResponse(result) {
+  validateAIResponse(result = {}) {
     const required = [
       'marketSummary',
       'technicalExplanation',
@@ -244,6 +399,9 @@ Return only valid JSON with this exact structure:
     result.confidencePercentage = Number(result.confidencePercentage || 0);
     result.confidencePercentage = Math.max(0, Math.min(100, result.confidencePercentage));
 
+    result.finalRecommendation = String(result.finalRecommendation || 'NO_TRADE').toUpperCase();
+    result.sentiment = String(result.sentiment || 'NEUTRAL').toUpperCase();
+
     const validRecs = ['BUY', 'SELL', 'WAIT', 'NO_TRADE'];
     if (!validRecs.includes(result.finalRecommendation)) {
       result.finalRecommendation = 'NO_TRADE';
@@ -260,7 +418,7 @@ Return only valid JSON with this exact structure:
     if (!Array.isArray(result.riskFactors)) result.riskFactors = [];
     if (!Array.isArray(result.opportunityFactors)) result.opportunityFactors = [];
 
-    if (!result.riskWarning || result.riskWarning.length < 10) {
+    if (!result.riskWarning || String(result.riskWarning).length < 10) {
       result.riskWarning =
         'Trading carries significant risk. Past performance does not guarantee future results. Only trade with capital you can afford to lose.';
     }
@@ -353,7 +511,7 @@ Confidence: ${signal.confidence}%
 Technical: ${JSON.stringify(signal.technicalAnalysis || {})}
 News: ${JSON.stringify(signal.newsAnalysis || {})}
 
-Return only valid JSON:
+Return ONLY valid JSON with this exact structure and no markdown:
 {
   "explanation": "Detailed trade explanation",
   "riskAssessment": "Risk assessment",
@@ -363,29 +521,35 @@ Return only valid JSON:
   "positives": []
 }`;
 
-      const response = await this.client.chat.completions.create({
-        model: this.aiModel,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a conservative trading risk analyst. Highlight risks. Never approve unsafe trades. Return only JSON.'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: 0.1,
-        max_tokens: 1500,
-        response_format: { type: 'json_object' }
+      const systemPrompt =
+        'You are a conservative trading risk analyst. Highlight risks. Never approve unsafe trades. Return only one valid JSON object. No markdown. No code block.';
+
+      const aiResult = await this.generateJsonWithAI({
+        systemPrompt,
+        userPrompt: prompt,
+        maxTokens: 1500
       });
 
-      return safeJsonParse(response.choices?.[0]?.message?.content || '{}');
+      return this.validateTradeExplanation(aiResult.parsed);
     } catch (error) {
       logger.error(`AI trade explanation error: ${error.message}`);
       return this.generateFallbackTradeExplanation(signal);
     }
+  }
+
+  validateTradeExplanation(result = {}) {
+    const recommendation = String(result.recommendation || 'REVIEW').toUpperCase();
+
+    return {
+      explanation: result.explanation || 'Trade explanation unavailable.',
+      riskAssessment: result.riskAssessment || 'Risk assessment unavailable.',
+      probabilityAnalysis: result.probabilityAnalysis || 'Probability analysis unavailable.',
+      recommendation: ['APPROVE', 'REJECT', 'REVIEW'].includes(recommendation)
+        ? recommendation
+        : 'REVIEW',
+      concerns: Array.isArray(result.concerns) ? result.concerns : [],
+      positives: Array.isArray(result.positives) ? result.positives : []
+    };
   }
 
   generateFallbackTradeExplanation(signal) {
