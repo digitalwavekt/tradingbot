@@ -1,4 +1,3 @@
-cat > src/services/ai/AIReasoningEngine.js <<'EOF'
 const https = require('https');
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');
