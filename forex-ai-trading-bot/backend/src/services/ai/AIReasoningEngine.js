@@ -1,33 +1,21 @@
+cat > src/services/ai/AIReasoningEngine.js <<'EOF'
 const https = require('https');
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');
 const { AiAnalysis, BotConfig } = require('../../models');
 
 function getAiProvider(config = {}) {
-  return String(
-    process.env.AI_PROVIDER ||
-    config.aiProvider ||
-    'gemini'
-  ).toLowerCase();
+  return String(process.env.AI_PROVIDER || config.aiProvider || 'gemini').toLowerCase();
 }
 
 function getAiModel(config = {}) {
   const provider = getAiProvider(config);
 
   if (provider === 'gemini') {
-    return (
-      process.env.GEMINI_MODEL ||
-      config.geminiModel ||
-      config.openaiModel ||
-      'gemini-3.5-flash'
-    );
+    return process.env.GEMINI_MODEL || config.geminiModel || config.openaiModel || 'gemini-3.5-flash';
   }
 
-  return (
-    process.env.OPENAI_MODEL ||
-    config.openaiModel ||
-    'gpt-4o-mini'
-  );
+  return process.env.OPENAI_MODEL || config.openaiModel || 'gpt-4o-mini';
 }
 
 function createOpenAIClient() {
@@ -35,9 +23,7 @@ function createOpenAIClient() {
     throw new Error('OPENAI_API_KEY is required when AI_PROVIDER=openai');
   }
 
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  });
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
 function stripCodeFences(text) {
@@ -51,7 +37,6 @@ function stripCodeFences(text) {
 
 function extractJsonCandidate(text) {
   const cleaned = stripCodeFences(text);
-
   if (!cleaned) return '';
 
   const objectStart = cleaned.indexOf('{');
@@ -59,13 +44,6 @@ function extractJsonCandidate(text) {
 
   if (objectStart >= 0 && objectEnd > objectStart) {
     return cleaned.slice(objectStart, objectEnd + 1).trim();
-  }
-
-  const arrayStart = cleaned.indexOf('[');
-  const arrayEnd = cleaned.lastIndexOf(']');
-
-  if (arrayStart >= 0 && arrayEnd > arrayStart) {
-    return cleaned.slice(arrayStart, arrayEnd + 1).trim();
   }
 
   return cleaned;
@@ -106,26 +84,11 @@ const MARKET_ANALYSIS_SCHEMA = {
     reasonToAvoid: { type: 'STRING' },
     confidencePercentage: { type: 'NUMBER' },
     riskWarning: { type: 'STRING' },
-    finalRecommendation: {
-      type: 'STRING',
-      enum: ['BUY', 'SELL', 'WAIT', 'NO_TRADE']
-    },
-    sentiment: {
-      type: 'STRING',
-      enum: ['BULLISH', 'BEARISH', 'NEUTRAL']
-    },
-    keyLevels: {
-      type: 'ARRAY',
-      items: { type: 'STRING' }
-    },
-    riskFactors: {
-      type: 'ARRAY',
-      items: { type: 'STRING' }
-    },
-    opportunityFactors: {
-      type: 'ARRAY',
-      items: { type: 'STRING' }
-    }
+    finalRecommendation: { type: 'STRING', enum: ['BUY', 'SELL', 'WAIT', 'NO_TRADE'] },
+    sentiment: { type: 'STRING', enum: ['BULLISH', 'BEARISH', 'NEUTRAL'] },
+    keyLevels: { type: 'ARRAY', items: { type: 'STRING' } },
+    riskFactors: { type: 'ARRAY', items: { type: 'STRING' } },
+    opportunityFactors: { type: 'ARRAY', items: { type: 'STRING' } }
   },
   required: [
     'marketSummary',
@@ -151,27 +114,11 @@ const TRADE_EXPLANATION_SCHEMA = {
     explanation: { type: 'STRING' },
     riskAssessment: { type: 'STRING' },
     probabilityAnalysis: { type: 'STRING' },
-    recommendation: {
-      type: 'STRING',
-      enum: ['APPROVE', 'REJECT', 'REVIEW']
-    },
-    concerns: {
-      type: 'ARRAY',
-      items: { type: 'STRING' }
-    },
-    positives: {
-      type: 'ARRAY',
-      items: { type: 'STRING' }
-    }
+    recommendation: { type: 'STRING', enum: ['APPROVE', 'REJECT', 'REVIEW'] },
+    concerns: { type: 'ARRAY', items: { type: 'STRING' } },
+    positives: { type: 'ARRAY', items: { type: 'STRING' } }
   },
-  required: [
-    'explanation',
-    'riskAssessment',
-    'probabilityAnalysis',
-    'recommendation',
-    'concerns',
-    'positives'
-  ]
+  required: ['explanation', 'riskAssessment', 'probabilityAnalysis', 'recommendation', 'concerns', 'positives']
 };
 
 function makeGeminiRequest({
@@ -196,20 +143,12 @@ function makeGeminiRequest({
 
     const payload = JSON.stringify({
       systemInstruction: {
-        parts: [
-          {
-            text: systemPrompt
-          }
-        ]
+        parts: [{ text: systemPrompt }]
       },
       contents: [
         {
           role: 'user',
-          parts: [
-            {
-              text: userPrompt
-            }
-          ]
+          parts: [{ text: userPrompt }]
         }
       ],
       generationConfig
@@ -234,18 +173,13 @@ function makeGeminiRequest({
 
         res.on('end', () => {
           if (res.statusCode < 200 || res.statusCode >= 300) {
-            return reject(
-              new Error(`Gemini API ${res.statusCode}: ${data.slice(0, 1500)}`)
-            );
+            return reject(new Error(`Gemini API ${res.statusCode}: ${data.slice(0, 1500)}`));
           }
 
           try {
-            const json = JSON.parse(data);
-            return resolve(json);
+            return resolve(JSON.parse(data));
           } catch (error) {
-            return reject(
-              new Error(`Gemini response parse failed: ${error.message}. Raw: ${data.slice(0, 1500)}`)
-            );
+            return reject(new Error(`Gemini response parse failed: ${error.message}. Raw: ${data.slice(0, 1500)}`));
           }
         });
       }
@@ -258,9 +192,7 @@ function makeGeminiRequest({
 }
 
 function extractGeminiText(response) {
-  const parts = response?.candidates?.[0]?.content?.parts || [];
-
-  return parts
+  return (response?.candidates?.[0]?.content?.parts || [])
     .map(part => part.text || '')
     .filter(Boolean)
     .join('\n')
@@ -328,11 +260,9 @@ class AIReasoningEngine {
         throw new Error(`Empty Gemini text response. Raw API response: ${JSON.stringify(response).slice(0, 1500)}`);
       }
 
-      const parsed = safeJsonParse(rawText);
-
       return {
         rawText,
-        parsed,
+        parsed: safeJsonParse(rawText),
         tokensUsed: response?.usageMetadata?.totalTokenCount || 0
       };
     }
@@ -340,14 +270,8 @@ class AIReasoningEngine {
     const response = await this.client.chat.completions.create({
       model: this.aiModel,
       messages: [
-        {
-          role: 'system',
-          content: systemPrompt
-        },
-        {
-          role: 'user',
-          content: userPrompt
-        }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
       ],
       temperature,
       max_tokens: maxOutputTokens,
@@ -355,11 +279,10 @@ class AIReasoningEngine {
     });
 
     const rawText = response.choices?.[0]?.message?.content || '';
-    const parsed = safeJsonParse(rawText);
 
     return {
       rawText,
-      parsed,
+      parsed: safeJsonParse(rawText),
       tokensUsed: response.usage?.total_tokens || 0
     };
   }
@@ -486,14 +409,12 @@ Return a JSON object that matches the provided schema exactly.`;
     result.finalRecommendation = String(result.finalRecommendation || 'NO_TRADE').toUpperCase();
     result.sentiment = String(result.sentiment || 'NEUTRAL').toUpperCase();
 
-    const validRecs = ['BUY', 'SELL', 'WAIT', 'NO_TRADE'];
-    if (!validRecs.includes(result.finalRecommendation)) {
+    if (!['BUY', 'SELL', 'WAIT', 'NO_TRADE'].includes(result.finalRecommendation)) {
       result.finalRecommendation = 'NO_TRADE';
       errors.push('Invalid recommendation, defaulted to NO_TRADE');
     }
 
-    const validSentiments = ['BULLISH', 'BEARISH', 'NEUTRAL'];
-    if (!validSentiments.includes(result.sentiment)) {
+    if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(result.sentiment)) {
       result.sentiment = 'NEUTRAL';
       errors.push('Invalid sentiment, defaulted to NEUTRAL');
     }
@@ -507,11 +428,7 @@ Return a JSON object that matches the provided schema exactly.`;
         'Trading carries significant risk. Past performance does not guarantee future results. Only trade with capital you can afford to lose.';
     }
 
-    return {
-      valid: errors.length === 0,
-      errors,
-      result
-    };
+    return { valid: errors.length === 0, errors, result };
   }
 
   generateFallbackSummary(pair, technical, fundamental, news) {
@@ -544,30 +461,14 @@ Return a JSON object that matches the provided schema exactly.`;
       marketSummary: `Technical analysis shows ${String(rec).replace('_', ' ').toLowerCase()} bias on ${pair}.`,
       technicalExplanation: `Multi-timeframe alignment: ${alignment.alignment || 'neutral'}.`,
       fundamentalExplanation: `Fundamental outlook: ${fundamental?.relativeStrength?.interpretation || 'neutral'}.`,
-      newsImpactExplanation: news?.newsSafe
-        ? 'No immediate news concerns.'
-        : 'High-impact news detected - caution advised.',
-      tradeThesis:
-        confidence > 55
-          ? `Potential ${recommendation.toLowerCase()} opportunity based on technical alignment.`
-          : 'No clear trade thesis.',
-      reasonToEnter:
-        confidence > 55
-          ? `Aligned timeframes suggest ${recommendation.toLowerCase()} direction.`
-          : 'Insufficient alignment for entry.',
-      reasonToAvoid:
-        confidence <= 55
-          ? 'Low confidence or conflicting signals.'
-          : 'Always risk only what you can afford to lose.',
+      newsImpactExplanation: news?.newsSafe ? 'No immediate news concerns.' : 'High-impact news detected - caution advised.',
+      tradeThesis: confidence > 55 ? `Potential ${recommendation.toLowerCase()} opportunity based on technical alignment.` : 'No clear trade thesis.',
+      reasonToEnter: confidence > 55 ? `Aligned timeframes suggest ${recommendation.toLowerCase()} direction.` : 'Insufficient alignment for entry.',
+      reasonToAvoid: confidence <= 55 ? 'Low confidence or conflicting signals.' : 'Always risk only what you can afford to lose.',
       confidencePercentage: confidence,
-      riskWarning:
-        'This is algorithmic analysis, not financial advice. Markets can move against any position. Use strict risk management.',
+      riskWarning: 'This is algorithmic analysis, not financial advice. Markets can move against any position. Use strict risk management.',
       finalRecommendation: recommendation,
-      sentiment: String(rec).includes('BULLISH')
-        ? 'BULLISH'
-        : String(rec).includes('BEARISH')
-          ? 'BEARISH'
-          : 'NEUTRAL',
+      sentiment: String(rec).includes('BULLISH') ? 'BULLISH' : String(rec).includes('BEARISH') ? 'BEARISH' : 'NEUTRAL',
       keyLevels: [],
       riskFactors: ['Market volatility', 'Unexpected news', 'Technical failure'],
       opportunityFactors: confidence > 55 ? ['Technical alignment'] : []
@@ -621,9 +522,7 @@ Return a JSON object that matches the provided schema exactly.`;
       explanation: result.explanation || 'Trade explanation unavailable.',
       riskAssessment: result.riskAssessment || 'Risk assessment unavailable.',
       probabilityAnalysis: result.probabilityAnalysis || 'Probability analysis unavailable.',
-      recommendation: ['APPROVE', 'REJECT', 'REVIEW'].includes(recommendation)
-        ? recommendation
-        : 'REVIEW',
+      recommendation: ['APPROVE', 'REJECT', 'REVIEW'].includes(recommendation) ? recommendation : 'REVIEW',
       concerns: Array.isArray(result.concerns) ? result.concerns : [],
       positives: Array.isArray(result.positives) ? result.positives : []
     };
