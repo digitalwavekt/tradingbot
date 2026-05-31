@@ -1,3 +1,4 @@
+cat > src/services/ai/AIReasoningEngine.js <<'EOF'
 const https = require('https');
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');
@@ -94,8 +95,106 @@ function safeJsonParse(raw) {
   }
 }
 
-function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperature, maxOutputTokens }) {
+const MARKET_ANALYSIS_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    marketSummary: { type: 'STRING' },
+    technicalExplanation: { type: 'STRING' },
+    fundamentalExplanation: { type: 'STRING' },
+    newsImpactExplanation: { type: 'STRING' },
+    tradeThesis: { type: 'STRING' },
+    reasonToEnter: { type: 'STRING' },
+    reasonToAvoid: { type: 'STRING' },
+    confidencePercentage: { type: 'NUMBER' },
+    riskWarning: { type: 'STRING' },
+    finalRecommendation: {
+      type: 'STRING',
+      enum: ['BUY', 'SELL', 'WAIT', 'NO_TRADE']
+    },
+    sentiment: {
+      type: 'STRING',
+      enum: ['BULLISH', 'BEARISH', 'NEUTRAL']
+    },
+    keyLevels: {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    },
+    riskFactors: {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    },
+    opportunityFactors: {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    }
+  },
+  required: [
+    'marketSummary',
+    'technicalExplanation',
+    'fundamentalExplanation',
+    'newsImpactExplanation',
+    'tradeThesis',
+    'reasonToEnter',
+    'reasonToAvoid',
+    'confidencePercentage',
+    'riskWarning',
+    'finalRecommendation',
+    'sentiment',
+    'keyLevels',
+    'riskFactors',
+    'opportunityFactors'
+  ]
+};
+
+const TRADE_EXPLANATION_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    explanation: { type: 'STRING' },
+    riskAssessment: { type: 'STRING' },
+    probabilityAnalysis: { type: 'STRING' },
+    recommendation: {
+      type: 'STRING',
+      enum: ['APPROVE', 'REJECT', 'REVIEW']
+    },
+    concerns: {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    },
+    positives: {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    }
+  },
+  required: [
+    'explanation',
+    'riskAssessment',
+    'probabilityAnalysis',
+    'recommendation',
+    'concerns',
+    'positives'
+  ]
+};
+
+function makeGeminiRequest({
+  model,
+  apiKey,
+  systemPrompt,
+  userPrompt,
+  temperature,
+  maxOutputTokens,
+  responseSchema
+}) {
   return new Promise((resolve, reject) => {
+    const generationConfig = {
+      temperature,
+      maxOutputTokens,
+      responseMimeType: 'application/json'
+    };
+
+    if (responseSchema) {
+      generationConfig.responseSchema = responseSchema;
+    }
+
     const payload = JSON.stringify({
       systemInstruction: {
         parts: [
@@ -114,11 +213,7 @@ function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperatur
           ]
         }
       ],
-      generationConfig: {
-        temperature,
-        maxOutputTokens,
-        responseMimeType: 'application/json'
-      }
+      generationConfig
     });
 
     const req = https.request(
@@ -141,7 +236,7 @@ function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperatur
         res.on('end', () => {
           if (res.statusCode < 200 || res.statusCode >= 300) {
             return reject(
-              new Error(`Gemini API ${res.statusCode}: ${data.slice(0, 1000)}`)
+              new Error(`Gemini API ${res.statusCode}: ${data.slice(0, 1500)}`)
             );
           }
 
@@ -150,7 +245,7 @@ function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperatur
             return resolve(json);
           } catch (error) {
             return reject(
-              new Error(`Gemini response parse failed: ${error.message}. Raw: ${data.slice(0, 1000)}`)
+              new Error(`Gemini response parse failed: ${error.message}. Raw: ${data.slice(0, 1500)}`)
             );
           }
         });
@@ -165,6 +260,7 @@ function makeGeminiRequest({ model, apiKey, systemPrompt, userPrompt, temperatur
 
 function extractGeminiText(response) {
   const parts = response?.candidates?.[0]?.content?.parts || [];
+
   return parts
     .map(part => part.text || '')
     .filter(Boolean)
@@ -212,7 +308,7 @@ class AIReasoningEngine {
     }
   }
 
-  async generateJsonWithAI({ systemPrompt, userPrompt, maxTokens }) {
+  async generateJsonWithAI({ systemPrompt, userPrompt, maxTokens, responseSchema }) {
     const temperature = Number(this.config?.aiTemperature ?? 0.1);
     const maxOutputTokens = Number(maxTokens || this.config?.aiMaxTokens || 2000);
 
@@ -223,10 +319,16 @@ class AIReasoningEngine {
         systemPrompt,
         userPrompt,
         temperature,
-        maxOutputTokens
+        maxOutputTokens,
+        responseSchema
       });
 
       const rawText = extractGeminiText(response);
+
+      if (!rawText) {
+        throw new Error(`Empty Gemini text response. Raw API response: ${JSON.stringify(response).slice(0, 1500)}`);
+      }
+
       const parsed = safeJsonParse(rawText);
 
       return {
@@ -283,8 +385,6 @@ IMPORTANT RULES:
 - Do not return markdown.
 - Do not return a code block.
 - Do not include any explanation outside JSON.
-- All JSON property names must be double quoted.
-- All string values must be double quoted.
 - finalRecommendation must be one of: BUY, SELL, WAIT, NO_TRADE.
 - sentiment must be one of: BULLISH, BEARISH, NEUTRAL.`;
 
@@ -295,7 +395,8 @@ IMPORTANT RULES:
         aiResult = await this.generateJsonWithAI({
           systemPrompt,
           userPrompt: prompt,
-          maxTokens: this.config.aiMaxTokens || 2000
+          maxTokens: this.config.aiMaxTokens || 3000,
+          responseSchema: MARKET_ANALYSIS_SCHEMA
         });
       } catch (error) {
         logger.error(`AI response JSON parse error: ${error.message}`);
@@ -354,23 +455,7 @@ NEWS ANALYSIS:
 - Recent High Impact: ${news?.recentEvents?.filter(e => e.impact === 'HIGH').length || 0}
 - News Safe: ${news?.newsSafe || false}
 
-Return ONLY valid JSON with this exact structure and no markdown:
-{
-  "marketSummary": "Brief market overview",
-  "technicalExplanation": "Technical analysis explanation",
-  "fundamentalExplanation": "Fundamental analysis explanation",
-  "newsImpactExplanation": "News impact assessment",
-  "tradeThesis": "Main trading thesis if any",
-  "reasonToEnter": "Reasons to enter trade",
-  "reasonToAvoid": "Reasons to avoid trade",
-  "confidencePercentage": 0,
-  "riskWarning": "Specific risk warnings",
-  "finalRecommendation": "BUY/SELL/WAIT/NO_TRADE",
-  "sentiment": "BULLISH/BEARISH/NEUTRAL",
-  "keyLevels": [],
-  "riskFactors": [],
-  "opportunityFactors": []
-}`;
+Return a JSON object that matches the provided schema exactly.`;
   }
 
   validateAIResponse(result = {}) {
@@ -511,15 +596,7 @@ Confidence: ${signal.confidence}%
 Technical: ${JSON.stringify(signal.technicalAnalysis || {})}
 News: ${JSON.stringify(signal.newsAnalysis || {})}
 
-Return ONLY valid JSON with this exact structure and no markdown:
-{
-  "explanation": "Detailed trade explanation",
-  "riskAssessment": "Risk assessment",
-  "probabilityAnalysis": "Probability of success/failure",
-  "recommendation": "APPROVE/REJECT/REVIEW",
-  "concerns": [],
-  "positives": []
-}`;
+Return a JSON object that matches the provided schema exactly.`;
 
       const systemPrompt =
         'You are a conservative trading risk analyst. Highlight risks. Never approve unsafe trades. Return only one valid JSON object. No markdown. No code block.';
@@ -527,7 +604,8 @@ Return ONLY valid JSON with this exact structure and no markdown:
       const aiResult = await this.generateJsonWithAI({
         systemPrompt,
         userPrompt: prompt,
-        maxTokens: 1500
+        maxTokens: 1500,
+        responseSchema: TRADE_EXPLANATION_SCHEMA
       });
 
       return this.validateTradeExplanation(aiResult.parsed);
@@ -576,3 +654,4 @@ Return ONLY valid JSON with this exact structure and no markdown:
 }
 
 module.exports = new AIReasoningEngine();
+EOF
