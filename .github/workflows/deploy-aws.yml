@@ -35,6 +35,7 @@ jobs:
               cd /opt/tradingbot/forex-ai-trading-bot/backend
 
               echo "🚀 Starting deployment..."
+
               echo "📥 Pulling latest code..."
               git fetch origin main
               git reset --hard origin/main
@@ -47,20 +48,28 @@ jobs:
               grep -q "JWT_REFRESH_SECRET=" .env || (echo "❌ JWT_REFRESH_SECRET missing" && exit 1)
 
               echo "📁 Fixing log permissions..."
-              mkdir -p logs
-              chmod -R 755 logs || true
+              sudo mkdir -p logs
+              sudo chown -R ubuntu:ubuntu logs || true
+              sudo find logs -type d -exec chmod 755 {} \; || true
+              sudo find logs -type f -exec chmod 644 {} \; || true
 
-              echo "🐳 Building Docker image..."
-              sudo docker compose build api
+              echo "🐳 Compose services:"
+              sudo docker compose config --services
 
-              echo "🧪 Syntax smoke test before replacing live container..."
-              sudo docker compose run --rm --no-deps api node -c src/server.js
-              sudo docker compose run --rm --no-deps api node -c src/services/dhan/DhanHistoricalDataService.js
-              sudo docker compose run --rm --no-deps api node -c src/controllers/marketController.js
-              sudo docker compose run --rm --no-deps api node -c src/services/trading/TradeDecisionEngine.js
+              echo "🐳 Building backend Docker image..."
+              sudo docker compose build --no-cache backend
 
-              echo "🐳 Restarting Docker services..."
-              sudo docker compose up -d --force-recreate
+              echo "🧪 Syntax smoke test before replacing live backend..."
+              sudo docker compose run --rm --no-deps backend node -c src/server.js
+              sudo docker compose run --rm --no-deps backend node -c src/services/dhan/DhanHistoricalDataService.js
+              sudo docker compose run --rm --no-deps backend node -c src/controllers/marketController.js
+              sudo docker compose run --rm --no-deps backend node -c src/services/trading/TradeDecisionEngine.js
+
+              echo "🐳 Restarting backend service..."
+              sudo docker compose up -d --no-deps --force-recreate backend
+
+              echo "🔄 Ensuring dependent services are running..."
+              sudo docker compose up -d redis frontend nginx
 
               echo "⏳ Waiting for API health..."
               for i in {1..30}; do
@@ -76,8 +85,8 @@ jobs:
                 echo "Container status:"
                 sudo docker compose ps || true
 
-                echo "Recent API logs:"
-                sudo docker logs --tail 120 tradingbot-api || true
+                echo "Recent backend logs:"
+                sudo docker compose logs --tail 120 backend || true
 
                 echo "Container inspect:"
                 sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
@@ -86,11 +95,12 @@ jobs:
               done
 
               echo "🚨 API failed health check after 150 seconds"
+
               echo "Final container status:"
               sudo docker compose ps || true
 
-              echo "Final API logs:"
-              sudo docker logs --tail 400 tradingbot-api || true
+              echo "Final backend logs:"
+              sudo docker compose logs --tail 400 backend || true
 
               echo "Final container inspect:"
               sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
