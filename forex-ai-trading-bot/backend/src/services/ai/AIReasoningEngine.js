@@ -551,4 +551,3 @@ Return a JSON object that matches the provided schema exactly.`;
 }
 
 module.exports = new AIReasoningEngine();
-EOF
