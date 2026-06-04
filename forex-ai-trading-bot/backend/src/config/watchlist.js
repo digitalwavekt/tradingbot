@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 const NIFTY_50_SYMBOLS = [
   "RELIANCE",
   "TCS",
@@ -114,7 +113,6 @@ module.exports = {
   getWatchlist,
   NIFTY_50_SYMBOLS,
   SENSEX_SYMBOLS
-=======
 const MANUAL_WATCHLIST = [
   'RELIANCE',
   'TCS',
@@ -169,22 +167,122 @@ const MANUAL_WATCHLIST = [
   'PIDILITIND'
 ];
 
+const NIFTY_50_SYMBOLS = [
+  'RELIANCE',
+  'TCS',
+  'HDFCBANK',
+  'ICICIBANK',
+  'BHARTIARTL',
+  'INFY',
+  'ITC',
+  'LT',
+  'SBIN',
+  'AXISBANK',
+  'KOTAKBANK',
+  'HINDUNILVR',
+  'BAJFINANCE',
+  'M&M',
+  'HCLTECH',
+  'SUNPHARMA',
+  'MARUTI',
+  'TITAN',
+  'ULTRACEMCO',
+  'NTPC',
+  'POWERGRID',
+  'BAJAJFINSV',
+  'TECHM',
+  'ONGC',
+  'TATASTEEL',
+  'COALINDIA',
+  'ADANIPORTS',
+  'ADANIENT',
+  'JSWSTEEL',
+  'GRASIM',
+  'CIPLA',
+  'DRREDDY',
+  'NESTLEIND',
+  'WIPRO',
+  'HDFCLIFE',
+  'SBILIFE',
+  'BRITANNIA',
+  'EICHERMOT',
+  'APOLLOHOSP',
+  'HINDALCO',
+  'BAJAJ-AUTO',
+  'BPCL',
+  'DIVISLAB',
+  'SHRIRAMFIN',
+  'TATACONSUM',
+  'HEROMOTOCO',
+  'UPL',
+  'ASIANPAINT'
+];
+
+const SENSEX_SYMBOLS = [
+  'RELIANCE',
+  'TCS',
+  'HDFCBANK',
+  'ICICIBANK',
+  'BHARTIARTL',
+  'INFY',
+  'ITC',
+  'LT',
+  'SBIN',
+  'AXISBANK',
+  'KOTAKBANK',
+  'HINDUNILVR',
+  'BAJFINANCE',
+  'M&M',
+  'HCLTECH',
+  'SUNPHARMA',
+  'MARUTI',
+  'TITAN',
+  'ULTRACEMCO',
+  'NTPC',
+  'POWERGRID',
+  'BAJAJFINSV',
+  'TECHM',
+  'TATASTEEL',
+  'JSWSTEEL',
+  'ASIANPAINT',
+  'TRENT',
+  'BEL',
+  'ETERNAL'
+];
+
+function uniqueSymbols(symbols) {
+  return [...new Set((symbols || []).filter(Boolean).map((s) => String(s).trim().toUpperCase()))]
+    .filter((symbol) => !EXCLUDED_SYMBOLS.has(symbol));
+}
+
 function getWatchlist() {
-  if (String(process.env.WATCHLIST_MODE || 'MANUAL').toUpperCase() !== 'MANUAL') {
-    return MANUAL_WATCHLIST;
+  const mode = String(process.env.WATCHLIST_MODE || 'MANUAL').toUpperCase();
+
+  if (mode === 'INDEX') {
+    const indices = String(process.env.WATCHLIST_INDICES || '')
+      .split(',')
+      .map((x) => x.trim().toUpperCase())
+      .filter(Boolean);
+
+    const symbols = [];
+    if (indices.includes('NIFTY50')) symbols.push(...NIFTY_50_SYMBOLS);
+    if (indices.includes('SENSEX')) symbols.push(...SENSEX_SYMBOLS);
+    if (symbols.length) return uniqueSymbols(symbols);
   }
 
-  const envSymbols = String(process.env.MANUAL_WATCHLIST || '')
+  const envSymbols = String(process.env.MANUAL_WATCHLIST || process.env.WATCHLIST_SYMBOLS || '')
     .split(',')
     .map((symbol) => symbol.trim().toUpperCase())
     .filter(Boolean);
 
-  const symbols = envSymbols.length ? envSymbols : MANUAL_WATCHLIST;
-  return [...new Set(symbols)].filter((symbol) => !['TATAMOTORS', 'LTIM'].includes(symbol));
+  return uniqueSymbols(envSymbols.length ? envSymbols : MANUAL_WATCHLIST);
 }
 
 module.exports = {
+  EXCLUDED_SYMBOLS,
   MANUAL_WATCHLIST,
+  NIFTY_50_SYMBOLS,
+  SENSEX_SYMBOLS,
   getWatchlist
  51227e5 (Add rule-based paper trading engine)
 };
