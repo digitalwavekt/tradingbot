@@ -50,16 +50,28 @@ class RiskEngine {
     return Number.isFinite(n) ? n : fallback;
   }
 
+  getEffectiveMode() {
+    return process.env.TRADING_MODE || this.config?.mode || 'LEARNING';
+  }
+
   getAccountBalance() {
     if (!this.account) return Number(process.env.PAPER_TRADING_BALANCE || 100000);
+<<<<<<< HEAD
     return getEffectiveMode(this.config) === 'PAPER'
+=======
+    return this.getEffectiveMode() === 'PAPER'
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
       ? this.safeNumber(this.account.paperBalance, Number(process.env.PAPER_TRADING_BALANCE || 100000))
       : this.safeNumber(this.account.balance, 100000);
   }
 
   getAccountEquity() {
     if (!this.account) return this.getAccountBalance();
+<<<<<<< HEAD
     return getEffectiveMode(this.config) === 'PAPER'
+=======
+    return this.getEffectiveMode() === 'PAPER'
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
       ? this.safeNumber(this.account.paperEquity, this.getAccountBalance())
       : this.safeNumber(this.account.equity, this.getAccountBalance());
   }
@@ -109,6 +121,8 @@ class RiskEngine {
     const rejectionReasons = [];
 
     try {
+      await this.loadRiskState();
+
       const pushCheck = async (checkOrPromise) => {
         const check = await checkOrPromise;
         checks.push(check);
@@ -118,13 +132,16 @@ class RiskEngine {
       await pushCheck(this.checkKillSwitch());
       await pushCheck(this.checkTradingMode());
       await pushCheck(this.checkDailyLossLimit());
+      await pushCheck(this.checkNewEntryWindow());
       await pushCheck(this.checkWeeklyLossLimit());
       await pushCheck(this.checkMonthlyLossLimit());
       await pushCheck(this.checkMaxOpenTrades(signal.pair));
+      await pushCheck(this.checkDuplicateOpenPaperPair(signal.pair));
       await pushCheck(this.checkCorrelatedTrades(signal.pair));
       await pushCheck(this.checkRiskReward(signal));
       await pushCheck(this.checkStopLoss(signal));
       await pushCheck(this.checkTakeProfit(signal));
+      await pushCheck(this.checkTradeLevels(signal));
       await pushCheck(this.checkSpread(marketData));
       await pushCheck(this.checkVolatility(marketData));
       await pushCheck(this.checkLiquidity(marketData));
@@ -199,6 +216,7 @@ class RiskEngine {
   }
 
   async checkTradingMode() {
+<<<<<<< HEAD
     const mode = getEffectiveMode(this.config);
     const allowed = ['PAPER', 'DEMO'].includes(mode) || process.env.ALLOW_LIVE_TRADING === 'true';
 
@@ -208,23 +226,60 @@ class RiskEngine {
       value: mode,
       threshold: 'PAPER/DEMO or live explicitly allowed',
       message: allowed ? `Mode ${mode} allows trading` : `Mode ${mode} does not allow trading`
+=======
+    const effectiveMode = this.getEffectiveMode();
+    const allowedModes = ['PAPER', 'DEMO', 'HUMAN_APPROVAL'];
+    const passed = allowedModes.includes(effectiveMode) && process.env.ALLOW_LIVE_TRADING !== 'true';
+    return {
+      name: 'TRADING_MODE',
+      passed,
+      value: effectiveMode,
+      threshold: allowedModes,
+      message: passed ? `Mode ${effectiveMode} allows PAPER-safe trading` : `Mode ${effectiveMode} does not allow PAPER-safe trading`
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
     };
   }
 
   async checkDailyLossLimit() {
     const balance = this.getAccountBalance();
+<<<<<<< HEAD
     const dailyLossPercent = balance > 0 ? (this.riskState.dailyLoss / balance) * 100 : 0;
     const limit = this.safeNumber(this.config?.dailyMaxLossPercent, 2);
     const passed = dailyLossPercent < limit;
+=======
+    const unrealizedPnl = this.riskState.openTrades.reduce((sum, t) => sum + this.safeNumber(t.monetaryPnl), 0);
+    const realizedPnl = this.safeNumber(this.riskState.dailyPnl, 0);
+    const realizedLossFallback = this.safeNumber(this.riskState.dailyLoss, 0);
+    const realizedComponent = realizedPnl !== 0 ? realizedPnl : -realizedLossFallback;
+    const totalPnl = realizedComponent + unrealizedPnl;
+    const lossPercent = balance > 0 && totalPnl < 0 ? (Math.abs(totalPnl) / balance) * 100 : 0;
+    const limit = this.safeNumber(this.config.dailyMaxLossPercent, 3);
+    const passed = lossPercent < limit;
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
 
     return {
       name: 'DAILY_LOSS_LIMIT',
       passed,
-      value: `${dailyLossPercent.toFixed(2)}%`,
+      value: `${lossPercent.toFixed(2)}%`,
       threshold: `${limit}%`,
       message: passed
-        ? `Daily loss ${dailyLossPercent.toFixed(2)}% below limit ${limit}%`
-        : `DAILY LOSS LIMIT REACHED: ${dailyLossPercent.toFixed(2)}% >= ${limit}%`
+        ? `Daily realized+unrealized loss ${lossPercent.toFixed(2)}% below limit ${limit}%`
+        : `DAILY LOSS LIMIT REACHED: ${lossPercent.toFixed(2)}% >= ${limit}%`
+    };
+  }
+
+  checkNewEntryWindow() {
+    const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const day = ist.getDay();
+    const minutes = ist.getHours() * 60 + ist.getMinutes();
+    const passed = day !== 0 && day !== 6 && minutes >= 9 * 60 + 20 && minutes <= 15 * 60;
+
+    return {
+      name: 'NSE_ENTRY_WINDOW',
+      passed,
+      value: `${String(ist.getHours()).padStart(2, '0')}:${String(ist.getMinutes()).padStart(2, '0')} IST`,
+      threshold: '09:20-15:00 IST weekday',
+      message: passed ? 'NSE new-entry window is open' : 'Outside NSE new-entry window or in first 5 minutes'
     };
   }
 
@@ -264,7 +319,11 @@ class RiskEngine {
 
   async checkMaxOpenTrades() {
     const openTradesCount = this.riskState.openTrades.length;
+<<<<<<< HEAD
     const limit = this.safeNumber(this.config?.maxOpenTrades, 3);
+=======
+    const limit = this.safeNumber(this.config.maxOpenTrades, 5);
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
     const passed = openTradesCount < limit;
 
     return {
@@ -275,6 +334,26 @@ class RiskEngine {
       message: passed
         ? `Open trades ${openTradesCount} below limit ${limit}`
         : `MAX OPEN TRADES REACHED: ${openTradesCount} >= ${limit}`
+    };
+  }
+
+  async checkDuplicateOpenPaperPair(pair) {
+    const normalizedPair = String(pair || '').toUpperCase();
+    const duplicate = await Trade.findOne({
+      pair: normalizedPair,
+      mode: 'PAPER',
+      status: { $in: ['OPEN', 'PENDING'] }
+    }).lean();
+
+    const passed = !duplicate;
+    return {
+      name: 'DUPLICATE_OPEN_PAPER_PAIR',
+      passed,
+      value: passed ? 0 : 1,
+      threshold: 0,
+      message: passed
+        ? `No open/pending PAPER trade for ${normalizedPair}`
+        : `Duplicate open/pending PAPER trade exists for ${normalizedPair}`
     };
   }
 
@@ -338,6 +417,29 @@ class RiskEngine {
       message: passed
         ? `Take profit set at ${takeProfit}`
         : 'TAKE PROFIT IS MANDATORY - NO TRADE WITHOUT VALID TAKE PROFIT'
+    };
+  }
+
+  checkTradeLevels(signal) {
+    const direction = signal.direction;
+    const entry = Number(signal.entryPrice);
+    const stopLoss = Number(signal.stopLoss);
+    const takeProfit = Number(signal.takeProfit);
+    let passed = [entry, stopLoss, takeProfit].every((v) => Number.isFinite(v) && v > 0);
+
+    if (passed && direction === 'BUY') {
+      passed = stopLoss < entry && entry < takeProfit && stopLoss >= entry * 0.5 && takeProfit <= entry * 1.5;
+    }
+    if (passed && direction === 'SELL') {
+      passed = takeProfit < entry && entry < stopLoss && takeProfit >= entry * 0.5 && stopLoss <= entry * 1.5;
+    }
+
+    return {
+      name: 'SL_TP_REALISTIC',
+      passed,
+      value: { direction, entry, stopLoss, takeProfit },
+      threshold: 'Valid order and within 50%-150% entry bounds',
+      message: passed ? 'SL/TP levels are realistic' : 'Invalid or unrealistic SL/TP levels'
     };
   }
 
@@ -451,7 +553,11 @@ class RiskEngine {
   async checkBrokerHealth() {
     const brokerAccount = await BrokerAccount.findOne({ isActive: true });
     const isHealthy = brokerAccount && brokerAccount.healthCheckStatus === 'HEALTHY';
+<<<<<<< HEAD
     const passed = isHealthy || getEffectiveMode(this.config) === 'PAPER';
+=======
+    const passed = isHealthy || this.getEffectiveMode() === 'PAPER';
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
 
     return {
       name: 'BROKER_HEALTH',
@@ -488,7 +594,11 @@ class RiskEngine {
 
     let projectedMarginUsage = 0;
 
+<<<<<<< HEAD
     if (getEffectiveMode(this.config) !== 'PAPER') {
+=======
+    if (this.getEffectiveMode() !== 'PAPER') {
+>>>>>>> 51227e5 (Add rule-based paper trading engine)
       const marginUsed = this.account ? this.safeNumber(this.account.marginUsed, 0) : 0;
       const positionSize = this.safeNumber(signal.positionSize, 0);
       const leverage = Math.max(this.safeNumber(this.config?.defaultLeverage, 1), 1);
@@ -497,7 +607,11 @@ class RiskEngine {
     }
 
     if (!Number.isFinite(projectedMarginUsage)) {
+ HEAD
       projectedMarginUsage = getEffectiveMode(this.config) === 'PAPER' ? 0 : 100;
+
+      projectedMarginUsage = this.getEffectiveMode() === 'PAPER' ? 0 : 100;
+ 51227e5 (Add rule-based paper trading engine)
     }
 
     const passed = projectedMarginUsage < maxMarginUsagePercent;
@@ -665,7 +779,11 @@ class RiskEngine {
 
     const balance = this.getAccountBalance();
 
+ HEAD
     if (this.riskState.dailyLoss >= balance * (this.safeNumber(this.config?.dailyMaxLossPercent, 2) / 100)) {
+
+    if (this.riskState.dailyLoss >= balance * (this.safeNumber(this.config.dailyMaxLossPercent, 3) / 100)) {
+ 51227e5 (Add rule-based paper trading engine)
       await this.triggerKillSwitch('Daily loss limit reached');
     }
 

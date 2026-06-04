@@ -18,6 +18,14 @@ const tradeDecisionEngine = require('./services/trading/TradeDecisionEngine');
 const riskEngine = require('./services/risk/RiskEngine');
 const aiEngine = require('./services/ai/AIReasoningEngine');
 
+function shouldInitializeAi() {
+  return (
+    process.env.AI_ENABLED === 'true' &&
+    process.env.RULE_BASED_TRADING !== 'true' &&
+    String(process.env.STRATEGY_MODE || '').toUpperCase() !== 'RULE_BASED'
+  );
+}
+
 // Routes
 const authRoutes = require('./routes/auth');
 const tradeRoutes = require('./routes/trades');
@@ -163,7 +171,11 @@ async function initializeServices() {
     await bootstrapDefaults();
 
     await tradeDecisionEngine.initialize();
-    await aiEngine.initialize();
+    if (shouldInitializeAi()) {
+      await aiEngine.initialize();
+    } else {
+      logger.info('AI initialization skipped because rule-based trading is active');
+    }
 
     if (process.env.ENABLE_SCHEDULER === 'true') {
       scheduler.start();

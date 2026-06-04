@@ -62,6 +62,9 @@ const tradeSchema = new mongoose.Schema({
   marginUsed: Number,
 
   // P&L
+  currentPrice: Number,
+  unrealizedPnl: Number,
+  realizedPnl: Number,
   pipsGained: Number,
   monetaryPnl: Number,
   pnlPercent: Number,
@@ -104,6 +107,9 @@ const tradeSchema = new mongoose.Schema({
   brokerOrderId: String,
   brokerTicket: String,
 
+  mtmSource: String,
+  mtmCandleTime: Date,
+
   // Mode
   mode: {
     type: String,
@@ -131,5 +137,15 @@ const tradeSchema = new mongoose.Schema({
 tradeSchema.index({ pair: 1, status: 1, createdAt: -1 });
 tradeSchema.index({ status: 1, mode: 1 });
 tradeSchema.index({ createdAt: -1 });
+tradeSchema.index(
+  { pair: 1, mode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      mode: 'PAPER',
+      status: { $in: ['OPEN', 'PENDING'] }
+    }
+  }
+);
 
 module.exports = mongoose.model('Trade', tradeSchema);

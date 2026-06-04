@@ -5,6 +5,7 @@ const logger = require('../utils/logger');
 const marketDataCollector = require('../services/MarketDataCollector');
 const newsEngine = require('../services/NewsEngine');
 const tradeDecisionEngine = require('../services/trading/TradeDecisionEngine');
+const paperMtmService = require('../services/trading/PaperMtmService');
 const { BotConfig, BrokerAccount, SystemHealth } = require('../models');
 const { getWatchlist } = require('../config/watchlist');
 
@@ -139,6 +140,16 @@ class Scheduler {
         await tradeDecisionEngine.runAnalysisCycle(symbols);
       } catch (error) {
         logger.error(`Trading analysis error: ${error.message}`);
+      }
+    }));
+
+    // Paper MTM every minute
+    this.jobs.push(cron.schedule('* * * * *', async () => {
+      try {
+        if ((process.env.TRADING_MODE || '').toUpperCase() !== 'PAPER') return;
+        await paperMtmService.runCycle();
+      } catch (error) {
+        logger.error(`Paper MTM error: ${error.message}`);
       }
     }));
 
