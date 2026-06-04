@@ -14,6 +14,10 @@ function getAiProvider() {
   return String(process.env.AI_PROVIDER || 'gemini').toLowerCase();
 }
 
+function isAiEnabled() {
+  return isEnabled(process.env.AI_ENABLED) && String(process.env.STRATEGY_MODE || '').toUpperCase() !== 'RULE_BASED';
+}
+
 function validateStartupEnv() {
   if (process.env.NODE_ENV !== 'production') return;
 
@@ -62,14 +66,14 @@ function validateStartupEnv() {
     throw new Error('AI_PROVIDER must be either openai or gemini');
   }
 
-  if (aiProvider === 'gemini') {
+  if (isAiEnabled() && aiProvider === 'gemini') {
     requireEnv(
       'GEMINI_API_KEY',
       'GEMINI_API_KEY is required in production when AI_PROVIDER=gemini'
     );
   }
 
-  if (aiProvider === 'openai') {
+  if (isAiEnabled() && aiProvider === 'openai') {
     requireEnv(
       'OPENAI_API_KEY',
       'OPENAI_API_KEY is required in production when AI_PROVIDER=openai'

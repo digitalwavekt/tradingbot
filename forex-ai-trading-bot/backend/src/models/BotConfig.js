@@ -4,7 +4,7 @@ const botConfigSchema = new mongoose.Schema({
   mode: {
     type: String,
     enum: ['LEARNING', 'PAPER', 'LIVE_MANUAL', 'LIVE_AUTO'],
-    default: 'LEARNING'
+    default: 'PAPER'
   },
 
   isLiveTradingEnabled: {
@@ -32,9 +32,9 @@ const botConfigSchema = new mongoose.Schema({
 
   riskPerTradePercent: {
     type: Number,
-    default: 0.5,
+    default: 1.0,
     min: 0.1,
-    max: 1.0
+    max: 2.0
   },
 
   maxRiskPerTradePercent: {
@@ -46,7 +46,7 @@ const botConfigSchema = new mongoose.Schema({
 
   dailyMaxLossPercent: {
     type: Number,
-    default: 2.0,
+    default: 3.0,
     min: 0.5,
     max: 5.0
   },
@@ -67,7 +67,7 @@ const botConfigSchema = new mongoose.Schema({
 
   maxOpenTrades: {
     type: Number,
-    default: 3,
+    default: 5,
     min: 1,
     max: 10
   },
@@ -211,7 +211,24 @@ const botConfigSchema = new mongoose.Schema({
 
   aiEnabled: {
     type: Boolean,
+    default: false
+  },
+
+  ruleBasedTrading: {
+    type: Boolean,
     default: true
+  },
+
+  strategyMode: {
+    type: String,
+    enum: ['RULE_BASED', 'AI_ASSISTED'],
+    default: 'RULE_BASED'
+  },
+
+  defaultStrategy: {
+    type: String,
+    enum: ['MULTI_CONFIRMATION', 'VWAP_RSI_MOMENTUM', 'EMA_9_21_CROSSOVER', 'OPENING_RANGE_BREAKOUT'],
+    default: 'MULTI_CONFIRMATION'
   },
 
   aiMaxTokens: {
