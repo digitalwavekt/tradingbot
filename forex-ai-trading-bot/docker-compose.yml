@@ -1,3 +1,4 @@
+services:
   backend:
     build:
       context: ./backend
@@ -8,6 +9,8 @@
       - "5000"
     ports:
       - "127.0.0.1:5000:5000"
+    env_file:
+      - ./backend/.env
     environment:
       - NODE_ENV=production
       - PORT=5000
@@ -21,11 +24,15 @@
       - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN}
       - DHAN_API_BASE_URL=${DHAN_API_BASE_URL}
       - DHAN_WS_URL=${DHAN_WS_URL}
-      - TRADING_MODE=${TRADING_MODE:-LEARNING}
+      - TRADING_MODE=${TRADING_MODE:-PAPER}
       - ALLOW_LIVE_TRADING=${ALLOW_LIVE_TRADING:-false}
+      - AI_ENABLED=${AI_ENABLED:-false}
+      - RULE_BASED_TRADING=${RULE_BASED_TRADING:-true}
+      - STRATEGY_MODE=${STRATEGY_MODE:-RULE_BASED}
+      - DEFAULT_STRATEGY=${DEFAULT_STRATEGY:-MULTI_CONFIRMATION}
       - ENABLE_KILL_SWITCH=${ENABLE_KILL_SWITCH:-false}
       - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
-      - WATCHLIST_MODE=${WATCHLIST_MODE:-INDEX}
+      - WATCHLIST_MODE=${WATCHLIST_MODE:-MANUAL}
       - WATCHLIST_INDICES=${WATCHLIST_INDICES:-NIFTY50,SENSEX}
       - MAX_SYMBOLS_PER_CYCLE=${MAX_SYMBOLS_PER_CYCLE:-15}
       - MAX_MARKET_SYNC_SYMBOLS_PER_CYCLE=${MAX_MARKET_SYNC_SYMBOLS_PER_CYCLE:-15}
@@ -34,6 +41,14 @@
       - ENABLE_LEARNING_ANALYSIS=${ENABLE_LEARNING_ANALYSIS:-true}
       - ENABLE_DHAN_AUTO_TOKEN=${ENABLE_DHAN_AUTO_TOKEN:-true}
       - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN:-}
+      - ENABLE_DHAN_HISTORICAL_SYNC=${ENABLE_DHAN_HISTORICAL_SYNC:-true}
+      - ENABLE_CANDLE_SYNC=${ENABLE_CANDLE_SYNC:-true}
+      - ENABLE_MARKET_SYNC=${ENABLE_MARKET_SYNC:-true}
+      - ANALYSIS_TIMEFRAMES=${ANALYSIS_TIMEFRAMES:-1m,5m,15m,1h,1D}
+      - REQUIRED_TIMEFRAMES=${REQUIRED_TIMEFRAMES:-15m,1h,1D}
+      - MIN_CANDLE_COUNT_15M=${MIN_CANDLE_COUNT_15M:-50}
+      - MIN_CANDLE_COUNT_1H=${MIN_CANDLE_COUNT_1H:-30}
+      - MIN_CANDLE_COUNT_1D=${MIN_CANDLE_COUNT_1D:-4}
     depends_on:
       - redis
     volumes:
@@ -41,3 +56,57 @@
       - ./backend/.env:/app/.env
     networks:
       - indian-market-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        INTERNAL_API_URL: http://backend:5000
+    container_name: indian-market-ai-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - INTERNAL_API_URL=http://backend:5000
+    depends_on:
+      - backend
+    networks:
+      - indian-market-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: indian-market-ai-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - indian-market-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: indian-market-ai-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deployment/nginx.conf:/etc/nginx/nginx.conf
+      - ./deployment/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - indian-market-network
+
+volumes:
+  redis-data:
+
+networks:
+  indian-market-network:
+    driver: bridge

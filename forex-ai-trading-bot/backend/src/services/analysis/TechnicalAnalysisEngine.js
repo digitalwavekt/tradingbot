@@ -1,18 +1,32 @@
 const logger = require('../../utils/logger');
 const { CandleData } = require('../../models');
 
+
+function getMinCandleCount(timeframe) {
+  const key = `MIN_CANDLE_COUNT_${String(timeframe).toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+  const defaults = {
+    '1M': 80,
+    '5M': 60,
+    '15M': 50,
+    '1H': 30,
+    '1D': 4
+  };
+  const normalized = String(timeframe).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return Number(process.env[key] || defaults[normalized] || 30);
+}
+
 class TechnicalAnalysisEngine {
   constructor() {
     this.indicators = {};
   }
 
-  async analyze(pair, timeframes = ['1m', '5m', '15m', '1h', '4h', '1D']) {
+  async analyze(pair, timeframes = (process.env.ANALYSIS_TIMEFRAMES || '1m,5m,15m,1h,1D').split(',').map(s => s.trim()).filter(Boolean)) {
     try {
       const results = {};
 
       for (const tf of timeframes) {
         const candles = await this.getCandles(pair, tf, 200);
-        if (candles.length < 50) {
+        if (candles.length < getMinCandleCount(tf)) {
           logger.warn(`Insufficient candles for ${pair} ${tf}: ${candles.length}`);
           continue;
         }

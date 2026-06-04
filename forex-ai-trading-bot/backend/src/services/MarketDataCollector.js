@@ -1,7 +1,109 @@
-const axios = require('axios');
 const logger = require('../utils/logger');
 const { CandleData, MarketData } = require('../models');
 const { getTradingSession } = require('../utils/helpers');
+
+let dhanHistoricalDataService = null;
+
+function getDhanHistoricalDataService() {
+  if (!dhanHistoricalDataService) {
+    const ExportedService = require('./dhan/DhanHistoricalDataService');
+    dhanHistoricalDataService = typeof ExportedService === 'function'
+      ? new ExportedService()
+      : ExportedService;
+  }
+
+  return dhanHistoricalDataService;
+}
+
+function toNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getDateRangeForTimeframe(timeframe, count = 200) {
+  const now = new Date();
+  const toDate = formatDate(now);
+  const from = new Date(now);
+
+  const tf = String(timeframe || '').toLowerCase();
+
+  if (tf === '1d' || tf === 'day' || tf === 'daily') {
+    const days = Math.max(Number(count || 200) + 20, 90);
+    from.setDate(from.getDate() - days);
+    return { fromDate: formatDate(from), toDate };
+  }
+
+  // Dhan intraday gives recent intraday candles. Keep range small and safe.
+  // For 1m/5m/15m/60m, last 5 trading days are enough for paper analysis.
+  from.setDate(from.getDate() - 7);
+  return { fromDate: formatDate(from), toDate };
+}
+
+function normalizeTimestamp(value) {
+  if (!value) return null;
+
+  if (typeof value === 'number') {
+    return new Date(value < 1000000000000 ? value * 1000 : value);
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function normalizeCandle(raw, pair, timeframe) {
+  if (!raw) return null;
+
+  const timestamp = normalizeTimestamp(raw.timestamp || raw.time || raw.date || raw.datetime);
+  const open = toNumber(raw.open);
+  const high = toNumber(raw.high);
+  const low = toNumber(raw.low);
+  const close = toNumber(raw.close);
+  const volume = toNumber(raw.volume || raw.vol || 0);
+
+  if (!timestamp || open == null || high == null || low == null || close == null) {
+    return null;
+  }
+
+  return {
+    pair,
+    timeframe,
+    timestamp,
+    open,
+    high,
+    low,
+    close,
+    volume: volume || 0,
+    tickVolume: volume || 0,
+    spread: 0,
+    source: 'DHAN'
+  };
+}
+
+function isIndianEquitySymbol(pair) {
+  return !String(pair || '').includes('/') && !String(pair || '').includes(':');
+}
+
+function isBadIndianEquityCandle(pair, candle) {
+  return isIndianEquitySymbol(pair) && candle && Number(candle.close) > 0 && Number(candle.close) < 20;
+}
+
+function normalizeTimeframeForDhan(timeframe) {
+  const tf = String(timeframe || '').trim().toLowerCase();
+
+  if (tf === '1d' || tf === 'day' || tf === 'daily') return '1D';
+  if (tf === '1h' || tf === '60m' || tf === '60') return '60m';
+  if (['1m', '5m', '15m', '25m'].includes(tf)) return tf;
+
+  if (tf === '4h') {
+    throw new Error('Dhan does not provide native 4h candles. Use 1h and resample later, or remove 4h from required timeframes.');
+  }
+
+  return timeframe;
+}
 
 class MarketDataCollector {
   constructor() {
@@ -13,10 +115,11 @@ class MarketDataCollector {
     logger.info('Market Data Collector initialized');
   }
 
-  async collectLivePrices(pairs) {
+  async collectLivePrices(pairs = []) {
     const results = [];
+    const uniquePairs = [...new Set((pairs || []).filter(Boolean))];
 
-    for (const pair of pairs) {
+    for (const pair of uniquePairs) {
       try {
         const data = await this.fetchPrice(pair);
 
@@ -45,46 +148,53 @@ class MarketDataCollector {
   }
 
   async fetchPrice(pair) {
-    // In production, fetch from actual broker API
-    // Mock implementation for development
+    const latest = await MarketData.findOne({ pair }).sort({ timestamp: -1 }).lean();
 
-    const basePrices = {
-      'EUR/USD': { bid: 1.0850, ask: 1.0852 },
-      'GBP/USD': { bid: 1.2650, ask: 1.2653 },
-      'USD/JPY': { bid: 148.50, ask: 148.52 },
-      'AUD/USD': { bid: 0.6550, ask: 0.6552 },
-      'USD/CHF': { bid: 0.8850, ask: 0.8853 },
-      'USD/CAD': { bid: 1.3550, ask: 1.3553 },
-      'NZD/USD': { bid: 0.6050, ask: 0.6052 },
-      'EUR/GBP': { bid: 0.8580, ask: 0.8583 }
-    };
+    if (latest && Number.isFinite(Number(latest.bid)) && Number.isFinite(Number(latest.ask))) {
+      return {
+        bid: Number(latest.bid),
+        ask: Number(latest.ask),
+        volatility: Number(latest.volatility || 0),
+        volume: Number(latest.volume || 0),
+        latency: Number(latest.latencyMs || 0)
+      };
+    }
 
-    const base = basePrices[pair] || { bid: 1.0000, ask: 1.0002 };
-
-    // Add small random movement
-    const movement = (Math.random() - 0.5) * 0.001;
-
-    return {
-      bid: Math.round((base.bid + movement) * 100000) / 100000,
-      ask: Math.round((base.ask + movement) * 100000) / 100000,
-      volatility: Math.random() * 2,
-      volume: Math.random() * 10000,
-      latency: Math.random() * 100
-    };
+    throw new Error(`No real live price available for ${pair}. Enable Dhan quote sync before PAPER execution.`);
   }
 
   async collectCandles(pair, timeframe, count = 200) {
     try {
       const candles = await this.fetchCandles(pair, timeframe, count);
 
-      // Save to database
+      let saved = 0;
+      let skipped = 0;
+
       for (const candle of candles) {
+        if (!candle || isBadIndianEquityCandle(pair, candle)) {
+          skipped += 1;
+          logger.warn(`Skipping invalid/synthetic candle for ${pair} ${timeframe}`, {
+            close: candle?.close,
+            timestamp: candle?.timestamp
+          });
+          continue;
+        }
+
         await CandleData.findOneAndUpdate(
-          { pair, timeframe, timestamp: candle.timestamp },
+          { pair, timeframe: candle.timeframe, timestamp: candle.timestamp },
           candle,
-          { upsert: true, new: true }
+          { upsert: true, new: true, setDefaultsOnInsert: true }
         );
+
+        saved += 1;
       }
+
+      logger.info(`Collected candles for ${pair} ${timeframe}`, {
+        requested: count,
+        fetched: candles.length,
+        saved,
+        skipped
+      });
 
       return candles;
     } catch (error) {
@@ -93,69 +203,57 @@ class MarketDataCollector {
     }
   }
 
-  async fetchCandles(pair, timeframe, count) {
-    // Mock candle generation for development
-    const candles = [];
-    const now = new Date();
-
-    let intervalMs;
-    switch(timeframe) {
-      case '1m': intervalMs = 60 * 1000; break;
-      case '5m': intervalMs = 5 * 60 * 1000; break;
-      case '15m': intervalMs = 15 * 60 * 1000; break;
-      case '1h': intervalMs = 60 * 60 * 1000; break;
-      case '4h': intervalMs = 4 * 60 * 60 * 1000; break;
-      case '1D': intervalMs = 24 * 60 * 60 * 1000; break;
-      default: intervalMs = 60 * 60 * 1000;
+  async fetchCandles(pair, timeframe, count = 200) {
+    if (process.env.ENABLE_DHAN_HISTORICAL_SYNC !== 'true') {
+      throw new Error(`Real Dhan historical sync disabled for ${pair} ${timeframe}. Set ENABLE_DHAN_HISTORICAL_SYNC=true`);
     }
 
-    const basePrices = {
-      'EUR/USD': 1.0850,
-      'GBP/USD': 1.2650,
-      'USD/JPY': 148.50,
-      'AUD/USD': 0.6550,
-      'USD/CHF': 0.8850,
-      'USD/CAD': 1.3550,
-      'NZD/USD': 0.6050,
-      'EUR/GBP': 0.8580
-    };
+    const dhanTimeframe = normalizeTimeframeForDhan(timeframe);
+    const { fromDate, toDate } = getDateRangeForTimeframe(dhanTimeframe, count);
 
-    let price = basePrices[pair] || 1.0;
+    const service = getDhanHistoricalDataService();
 
-    for (let i = count; i >= 0; i--) {
-      const timestamp = new Date(now.getTime() - i * intervalMs);
+    if (typeof service.fetchOHLC !== 'function') {
+      const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(service))
+        .concat(Object.keys(service))
+        .filter((key, index, arr) => typeof service[key] === 'function' && arr.indexOf(key) === index);
 
-      // Generate realistic price movement
-      const trend = Math.sin(i / 20) * 0.01;
-      const noise = (Math.random() - 0.5) * 0.002;
-      const change = trend + noise;
-
-      price = price * (1 + change);
-
-      const open = price;
-      const close = price * (1 + (Math.random() - 0.5) * 0.001);
-      const high = Math.max(open, close) * (1 + Math.random() * 0.0005);
-      const low = Math.min(open, close) * (1 - Math.random() * 0.0005);
-
-      candles.push({
-        pair,
-        timeframe,
-        timestamp,
-        open: Math.round(open * 100000) / 100000,
-        high: Math.round(high * 100000) / 100000,
-        low: Math.round(low * 100000) / 100000,
-        close: Math.round(close * 100000) / 100000,
-        volume: Math.floor(Math.random() * 1000) + 100,
-        tickVolume: Math.floor(Math.random() * 500) + 50,
-        spread: 0.0002,
-        source: this.activeSource
-      });
+      throw new Error(`DhanHistoricalDataService.fetchOHLC not found. Available methods: ${methods.join(', ')}`);
     }
 
-    return candles;
+    const rawCandles = await service.fetchOHLC(pair, dhanTimeframe, {
+      count,
+      fromDate,
+      toDate
+    });
+
+    if (!Array.isArray(rawCandles)) {
+      throw new Error(`DhanHistoricalDataService returned non-array candles for ${pair} ${timeframe}`);
+    }
+
+    const normalized = rawCandles
+      .map(candle => normalizeCandle(candle, pair, timeframe))
+      .filter(Boolean)
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-Number(count || 200));
+
+    if (!normalized.length) {
+      throw new Error(`No real Dhan candles returned for ${pair} ${timeframe}`);
+    }
+
+    const bad = normalized.find(candle => isBadIndianEquityCandle(pair, candle));
+    if (bad) {
+      throw new Error(`Dhan returned suspicious Indian equity candle for ${pair}: close=${bad.close}`);
+    }
+
+    return normalized;
   }
 
   calculateSpreadPips(spread, pair) {
+    if (isIndianEquitySymbol(pair)) {
+      return Math.round(Number(spread || 0) * 100) / 100;
+    }
+
     const multiplier = pair.includes('JPY') ? 100 : 10000;
     return Math.round(spread * multiplier * 10) / 10;
   }

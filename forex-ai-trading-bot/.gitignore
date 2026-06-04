@@ -88,3 +88,10 @@ pnpm-lock.yaml
 
 .vercel
 .env*.local
+
+# local backups/debug files
+*.bak-*
+backend/.env.bak-*
+backend-backup-*/
+backups/
+backend/scripts/
