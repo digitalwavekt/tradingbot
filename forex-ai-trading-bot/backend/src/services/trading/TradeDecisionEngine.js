@@ -612,6 +612,81 @@ class TradeDecisionEngine {
   }
 
   async executeApprovedTrade(decision) {
+
+      const effectiveModeForPaper = this.config?.mode || process.env.TRADING_MODE || 'PAPER';
+
+      if (effectiveModeForPaper === 'PAPER' || effectiveModeForPaper === 'DEMO') {
+        const tradeId = `PAPER_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+          const entry = Number(decision.entry);
+          const stopLoss = Number(decision.stopLoss);
+          const takeProfit = Number(decision.takeProfit);
+          const dir = String(decision.decision || "").toUpperCase();
+
+          const invalidBuy = dir === BUY && (
+            !(stopLoss < entry && takeProfit > entry) ||
+            stopLoss < entry * 0.5 ||
+            takeProfit > entry * 1.5
+          );
+
+          const invalidSell = dir === SELL && (
+            !(stopLoss > entry && takeProfit < entry) ||
+            stopLoss > entry * 1.5 ||
+            takeProfit < entry * 0.5
+          );
+
+          if (!entry || !stopLoss || !takeProfit || invalidBuy || invalidSell) {
+            logger.warn(PAPER_TRADE_SKIPPED_INVALID_SL_TP, {
+              pair: decision.pair,
+              direction: decision.decision,
+              entry,
+              stopLoss,
+              takeProfit
+            });
+
+            return {
+              success: false,
+              skipped: true,
+              reason: INVALID_SL_TP_FOR_PAPER_TRADE,
+              pair: decision.pair
+            };
+          }
+
+
+
+        const trade = await Trade.create({
+          tradeId,
+          signalId: decision.signalId,
+          pair: decision.pair,
+          symbol: decision.pair,
+          side: decision.decision,
+          direction: decision.decision,
+          entryPrice: decision.entry,
+          stopLoss: decision.stopLoss,
+          takeProfit: decision.takeProfit,
+          riskReward: decision.riskReward,
+          riskPercent: decision.riskPercent,
+          positionSize: decision.positionSize,
+          quantity: decision.positionSize || 1,
+          status: 'OPEN',
+          mode: effectiveModeForPaper,
+          broker: 'PAPER',
+          brokerTicket: tradeId,
+          source: 'PAPER_SIMULATION',
+          openedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+
+        await Signal.findOneAndUpdate(
+          { signalId: decision.signalId },
+          { status: 'EXECUTED' }
+        );
+
+        logger.info(`Paper trade opened: ${trade.tradeId} ${decision.pair} ${decision.decision}`);
+        return trade;
+      }
+
     if (decision.decision !== 'BUY' && decision.decision !== 'SELL') {
       return null;
     }

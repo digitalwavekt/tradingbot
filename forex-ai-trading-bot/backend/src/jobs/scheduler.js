@@ -1,3 +1,4 @@
+const PaperMtmService = require("../services/trading/PaperMtmService");
 const dhanTokenService = require('../services/dhan/DhanTokenService');
 const cron = require('node-cron');
 const logger = require('../utils/logger');
@@ -171,6 +172,20 @@ class Scheduler {
         logger.error(`Daily reset error: ${error.message}`);
       }
     }));
+
+
+  setInterval(async () => {
+    try {
+      await PaperMtmService.runOnce();
+    } catch (error) {
+      logger.error("Paper MTM scheduler failed", {
+        message: error.message,
+        stack: error.stack
+      });
+    }
+  }, 60 * 1000);
+
+  logger.info("Paper MTM scheduler started", { intervalMs: 60000 });
 
     logger.info('Scheduler started with all jobs');
   }

@@ -1,3 +1,28 @@
+
+function isQuotaError(error) {
+  const msg = String(error?.message || error || "");
+  return msg.includes("429") ||
+    msg.includes("RESOURCE_EXHAUSTED") ||
+    msg.toLowerCase().includes("quota") ||
+    msg.toLowerCase().includes("rate limit");
+}
+
+function geminiQuotaFallback(context = {}) {
+  return {
+    decision: "NO_TRADE",
+    action: "NO_TRADE",
+    recommendation: "NO_TRADE",
+    confidence: 0,
+    reason: "GEMINI_QUOTA_FALLBACK_NO_TRADE",
+    rejectionReason: "AI quota/rate limit reached; skipped trade safely in PAPER mode",
+    riskLevel: "HIGH",
+    shouldTrade: false,
+    fallback: true,
+    providerError: "GEMINI_QUOTA_OR_RATE_LIMIT",
+    pair: context.pair || context.symbol || null
+  };
+}
+
 const https = require('https');
 const OpenAI = require('openai');
 const logger = require('../../utils/logger');

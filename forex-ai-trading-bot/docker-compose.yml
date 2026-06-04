@@ -7,6 +7,10 @@ services:
     restart: unless-stopped
     expose:
       - "5000"
+    ports:
+      - "127.0.0.1:5000:5000"
+    env_file:
+      - ./backend/.env
     environment:
       - NODE_ENV=production
       - PORT=5000
@@ -23,6 +27,16 @@ services:
       - TRADING_MODE=${TRADING_MODE:-LEARNING}
       - ALLOW_LIVE_TRADING=${ALLOW_LIVE_TRADING:-false}
       - ENABLE_KILL_SWITCH=${ENABLE_KILL_SWITCH:-false}
+      - ENABLE_DHAN_AUTO_TOKEN=${ENABLE_DHAN_AUTO_TOKEN:-true}
+      - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN:-}
+      - ENABLE_DHAN_HISTORICAL_SYNC=${ENABLE_DHAN_HISTORICAL_SYNC:-true}
+      - ENABLE_CANDLE_SYNC=${ENABLE_CANDLE_SYNC:-true}
+      - ENABLE_MARKET_SYNC=${ENABLE_MARKET_SYNC:-true}
+      - ANALYSIS_TIMEFRAMES=${ANALYSIS_TIMEFRAMES:-1m,5m,15m,1h,1D}
+      - REQUIRED_TIMEFRAMES=${REQUIRED_TIMEFRAMES:-15m,1h,1D}
+      - MIN_CANDLE_COUNT_15M=${MIN_CANDLE_COUNT_15M:-50}
+      - MIN_CANDLE_COUNT_1H=${MIN_CANDLE_COUNT_1H:-30}
+      - MIN_CANDLE_COUNT_1D=${MIN_CANDLE_COUNT_1D:-4}
     depends_on:
       - redis
     volumes:
