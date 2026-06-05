@@ -60,8 +60,33 @@ jobs:
             -o ServerAliveCountMax=4
           )
 
-          echo "Uploading EC2 deploy script..."
-          ssh "${SSH_OPTS[@]}" "$REMOTE" 'cat > /tmp/tradingbot-deploy.sh' <<'REMOTE_SCRIPT'
+          ssh_retry() {
+            for attempt in 1 2 3 4 5; do
+              if ssh "${SSH_OPTS[@]}" "$@"; then
+                return 0
+              fi
+
+              echo "ssh failed on attempt ${attempt}/5; retrying..."
+              sleep 20
+            done
+
+            return 1
+          }
+
+          scp_retry() {
+            for attempt in 1 2 3 4 5; do
+              if scp "${SSH_OPTS[@]}" "$@"; then
+                return 0
+              fi
+
+              echo "scp failed on attempt ${attempt}/5; retrying..."
+              sleep 20
+            done
+
+            return 1
+          }
+
+          cat > /tmp/tradingbot-deploy.sh <<'REMOTE_SCRIPT'
               #!/usr/bin/env bash
               set -e
 
@@ -152,8 +177,7 @@ jobs:
               exit 1
           REMOTE_SCRIPT
 
-          echo "Uploading EC2 deploy runner..."
-          ssh "${SSH_OPTS[@]}" "$REMOTE" 'cat > /tmp/tradingbot-deploy-runner.sh' <<'REMOTE_RUNNER'
+          cat > /tmp/tradingbot-deploy-runner.sh <<'REMOTE_RUNNER'
           #!/usr/bin/env bash
           set +e
           rm -f /tmp/tradingbot-deploy.exit
@@ -163,8 +187,11 @@ jobs:
           exit "$code"
           REMOTE_RUNNER
 
+          echo "Uploading EC2 deploy scripts..."
+          scp_retry /tmp/tradingbot-deploy.sh /tmp/tradingbot-deploy-runner.sh "$REMOTE:/tmp/"
+
           echo "Starting EC2 deploy script in the background..."
-          ssh "${SSH_OPTS[@]}" "$REMOTE" '
+          ssh_retry "$REMOTE" '
             chmod +x /tmp/tradingbot-deploy.sh /tmp/tradingbot-deploy-runner.sh
             nohup bash /tmp/tradingbot-deploy-runner.sh >/dev/null 2>&1 < /dev/null &
             echo $! > /tmp/tradingbot-deploy.pid
@@ -175,7 +202,7 @@ jobs:
           for attempt in {1..45}; do
             echo "Deploy poll ${attempt}/45"
 
-            poll_output="$(ssh "${SSH_OPTS[@]}" "$REMOTE" '
+            poll_output="$(ssh_retry "$REMOTE" '
               if [ -f /tmp/tradingbot-deploy.exit ]; then
                 echo "EXIT_CODE=$(cat /tmp/tradingbot-deploy.exit)"
               else
@@ -201,5 +228,5 @@ jobs:
           done
 
           echo "EC2 deploy did not finish before workflow timeout window."
-          ssh "${SSH_OPTS[@]}" "$REMOTE" 'tail -n 200 /tmp/tradingbot-deploy.log 2>/dev/null || true' || true
+          ssh_retry "$REMOTE" 'tail -n 200 /tmp/tradingbot-deploy.log 2>/dev/null || true' || true
           exit 1
