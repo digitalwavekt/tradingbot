@@ -31,6 +31,8 @@ jobs:
         run: |
           ssh -i ~/.ssh/trading-backend.pem \
             -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
             ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'EOF'
               set -e
 
@@ -58,8 +60,11 @@ jobs:
               echo "🐳 Compose services:"
               sudo docker compose config --services
 
-              echo "🐳 Building backend and frontend Docker images..."
-              sudo docker compose build --no-cache backend frontend
+              echo "🐳 Building backend Docker image..."
+              sudo docker compose build --no-cache --progress=plain backend
+
+              echo "🐳 Building frontend Docker image..."
+              sudo docker compose build --no-cache --progress=plain frontend
 
               echo "🧪 Syntax smoke test before replacing live backend..."
               sudo docker compose run --rm --no-deps backend node -c src/server.js
