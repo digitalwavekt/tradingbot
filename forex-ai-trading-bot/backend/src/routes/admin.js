@@ -4,6 +4,41 @@ const { BotConfig, Trade, RiskLog, AuditLog, BrokerAccount, SystemHealth, User }
 const { authenticate, authorize } = require('../middleware/auth');
 const riskEngine = require('../services/risk/RiskEngine');
 const logger = require('../utils/logger');
+const { getWatchlist } = require('../config/watchlist');
+
+function envBool(key) {
+  return String(process.env[key] || '').toLowerCase() === 'true';
+}
+
+function safeNumber(value, fallback = null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function getEffectiveMode(config) {
+  return process.env.TRADING_MODE || config?.mode || 'PAPER';
+}
+
+function publicEnvSnapshot() {
+  return {
+    nodeEnv: process.env.NODE_ENV || null,
+    tradingMode: process.env.TRADING_MODE || null,
+    allowLiveTrading: envBool('ALLOW_LIVE_TRADING'),
+    enableLiveAuto: envBool('ENABLE_LIVE_AUTO'),
+    aiEnabled: envBool('AI_ENABLED'),
+    ruleBasedTrading: process.env.RULE_BASED_TRADING !== 'false',
+    strategyMode: process.env.STRATEGY_MODE || 'RULE_BASED',
+    defaultStrategy: process.env.DEFAULT_STRATEGY || 'MULTI_CONFIRMATION',
+    watchlistMode: process.env.WATCHLIST_MODE || 'MANUAL',
+    enableScheduler: envBool('ENABLE_SCHEDULER'),
+    enableMarketSync: envBool('ENABLE_MARKET_SYNC'),
+    enableCandleSync: envBool('ENABLE_CANDLE_SYNC'),
+    enableDhanHistoricalSync: envBool('ENABLE_DHAN_HISTORICAL_SYNC'),
+    enableDhanAutoToken: envBool('ENABLE_DHAN_AUTO_TOKEN'),
+    dhanClientConfigured: Boolean(process.env.DHAN_CLIENT_ID),
+    dhanAccessTokenConfigured: Boolean(process.env.DHAN_ACCESS_TOKEN)
+  };
+}
 
 router.get('/config', authenticate, authorize(['admin', 'subadmin']), async (req, res) => {
   try {
@@ -11,6 +46,84 @@ router.get('/config', authenticate, authorize(['admin', 'subadmin']), async (req
     res.json({ config });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch config' });
+  }
+});
+
+router.get('/runtime-status', authenticate, authorize(['admin', 'subadmin']), async (req, res) => {
+  try {
+    const [config, account, systemHealth, openPaperTrades, pendingPaperTrades, openTrades, todaysClosedTrades] = await Promise.all([
+      BotConfig.findOne().sort({ updatedAt: -1 }).lean(),
+      BrokerAccount.findOne({ isActive: true }).sort({ updatedAt: -1 }).lean(),
+      SystemHealth.find().sort({ lastCheck: -1, updatedAt: -1 }).limit(20).lean(),
+      Trade.countDocuments({ mode: 'PAPER', status: 'OPEN' }),
+      Trade.countDocuments({ mode: 'PAPER', status: 'PENDING' }),
+      Trade.countDocuments({ status: { $in: ['OPEN', 'PENDING'] } }),
+      Trade.find({
+        status: 'CLOSED',
+        closedAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) }
+      }).select('monetaryPnl realizedPnl closedAt exitReason').lean()
+    ]);
+
+    const effectiveMode = getEffectiveMode(config);
+    const paperMode = effectiveMode === 'PAPER';
+    const watchlist = getWatchlist();
+    const todayPnl = todaysClosedTrades.reduce(
+      (sum, trade) => sum + safeNumber(trade.monetaryPnl ?? trade.realizedPnl, 0),
+      0
+    );
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      env: publicEnvSnapshot(),
+      config: config || null,
+      effectiveMode,
+      modeSource: process.env.TRADING_MODE ? 'env' : config?.mode ? 'database' : 'default',
+      account: account ? {
+        broker: account.broker,
+        accountType: account.accountType,
+        accountId: account.accountId,
+        isConnected: account.isConnected,
+        healthCheckStatus: account.healthCheckStatus,
+        tokenStatus: account.tokenStatus,
+        authMode: account.authMode,
+        lastTokenSource: account.lastTokenSource,
+        tokenExpiry: account.tokenExpiry,
+        apiLatencyMs: account.apiLatencyMs,
+        balance: safeNumber(account.balance),
+        equity: safeNumber(account.equity),
+        paperBalance: safeNumber(account.paperBalance),
+        paperEquity: safeNumber(account.paperEquity),
+        displayBalance: paperMode ? safeNumber(account.paperBalance) : safeNumber(account.balance),
+        displayEquity: paperMode ? safeNumber(account.paperEquity) : safeNumber(account.equity),
+        marginUsed: safeNumber(account.marginUsed),
+        freeMargin: safeNumber(account.freeMargin),
+        openPositions: safeNumber(account.openPositions, 0),
+        unrealizedPnl: safeNumber(account.unrealizedPnl, 0),
+        paperTradingDays: safeNumber(account.paperTradingDays, 0),
+        paperTotalReturn: safeNumber(account.paperTotalReturn, 0),
+        updatedAt: account.updatedAt,
+        lastConnectedAt: account.lastConnectedAt,
+        lastError: account.lastError,
+        lastErrorAt: account.lastErrorAt
+      } : null,
+      trading: {
+        openPaperTrades,
+        pendingPaperTrades,
+        openTrades,
+        todayClosedTrades: todaysClosedTrades.length,
+        todayPnl
+      },
+      watchlist: {
+        mode: process.env.WATCHLIST_MODE || 'MANUAL',
+        count: watchlist.length,
+        hasTataMotors: watchlist.includes('TATAMOTORS'),
+        hasLtim: watchlist.includes('LTIM')
+      },
+      systemHealth
+    });
+  } catch (error) {
+    logger.error(`Runtime status error: ${error.message}`);
+    res.status(500).json({ error: 'Failed to fetch runtime status' });
   }
 });
 
