@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "forex-ai-trading-bot/backend/**"
+      - "forex-ai-trading-bot/frontend/**"
+      - "forex-ai-trading-bot/docker-compose.yml"
       - ".github/workflows/deploy-aws.yml"
 
 jobs:
@@ -56,8 +58,8 @@ jobs:
               echo "🐳 Compose services:"
               sudo docker compose config --services
 
-              echo "🐳 Building backend Docker image..."
-              sudo docker compose build --no-cache backend
+              echo "🐳 Building backend and frontend Docker images..."
+              sudo docker compose build --no-cache backend frontend
 
               echo "🧪 Syntax smoke test before replacing live backend..."
               sudo docker compose run --rm --no-deps backend node -c src/server.js
@@ -65,11 +67,11 @@ jobs:
               sudo docker compose run --rm --no-deps backend node -c src/controllers/marketController.js
               sudo docker compose run --rm --no-deps backend node -c src/services/trading/TradeDecisionEngine.js
 
-              echo "🐳 Restarting backend service..."
-              sudo docker compose up -d --no-deps --force-recreate backend
+              echo "🐳 Restarting backend and frontend services..."
+              sudo docker compose up -d --no-deps --force-recreate backend frontend
 
               echo "🔄 Ensuring dependent services are running..."
-              sudo docker compose up -d redis frontend nginx
+              sudo docker compose up -d redis nginx
 
               echo "⏳ Waiting for API health..."
               for i in {1..30}; do
