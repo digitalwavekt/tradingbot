@@ -57,7 +57,12 @@ jobs:
               cd /opt/tradingbot/forex-ai-trading-bot/backend
 
               echo "Cleaning stale Docker build processes from previous interrupted deploys..."
-              sudo pkill -f "docker compose build" || true
+              stale_build_pids="$(pgrep -f '[d]ocker compose build' || true)"
+              if [ -n "$stale_build_pids" ]; then
+                echo "$stale_build_pids" | xargs -r sudo kill || true
+                sleep 3
+                echo "$stale_build_pids" | xargs -r sudo kill -9 || true
+              fi
 
               echo "🚀 Starting deployment..."
 
