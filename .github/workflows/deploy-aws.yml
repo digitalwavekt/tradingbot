@@ -10,11 +10,15 @@ on:
       - "forex-ai-trading-bot/docker-compose.yml"
       - ".github/workflows/deploy-aws.yml"
 
+concurrency:
+  group: ec2-main-deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     name: Deploy backend
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -37,6 +41,9 @@ jobs:
               set -e
 
               cd /opt/tradingbot/forex-ai-trading-bot/backend
+
+              echo "Cleaning stale Docker build processes from previous interrupted deploys..."
+              sudo pkill -f "docker compose build" || true
 
               echo "🚀 Starting deployment..."
 
@@ -61,10 +68,10 @@ jobs:
               sudo docker compose config --services
 
               echo "🐳 Building backend Docker image..."
-              sudo docker compose build --no-cache --progress=plain backend
+              timeout 420 sudo docker compose build --progress=plain backend
 
               echo "🐳 Building frontend Docker image..."
-              sudo docker compose build --no-cache --progress=plain frontend
+              timeout 420 sudo docker compose build --progress=plain frontend
 
               echo "🧪 Syntax smoke test before replacing live backend..."
               sudo docker compose run --rm --no-deps backend node -c src/server.js
