@@ -18,7 +18,7 @@ jobs:
   deploy:
     name: Deploy full stack
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -46,12 +46,23 @@ jobs:
 
       - name: Deploy on EC2
         run: |
-          ssh -i ~/.ssh/trading-backend.pem \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'EOF'
+          set -e
+
+          REMOTE="${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}"
+          SSH_OPTS=(
+            -i ~/.ssh/trading-backend.pem
+            -o StrictHostKeyChecking=accept-new
+            -o UserKnownHostsFile=~/.ssh/known_hosts
+            -o BatchMode=yes
+            -o ConnectTimeout=30
+            -o ConnectionAttempts=2
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          )
+
+          echo "Uploading EC2 deploy script..."
+          ssh "${SSH_OPTS[@]}" "$REMOTE" 'cat > /tmp/tradingbot-deploy.sh' <<'REMOTE_SCRIPT'
+              #!/usr/bin/env bash
               set -e
 
               cd /opt/tradingbot/forex-ai-trading-bot/backend
@@ -139,4 +150,56 @@ jobs:
               sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
 
               exit 1
-          EOF
+          REMOTE_SCRIPT
+
+          echo "Uploading EC2 deploy runner..."
+          ssh "${SSH_OPTS[@]}" "$REMOTE" 'cat > /tmp/tradingbot-deploy-runner.sh' <<'REMOTE_RUNNER'
+          #!/usr/bin/env bash
+          set +e
+          rm -f /tmp/tradingbot-deploy.exit
+          bash /tmp/tradingbot-deploy.sh > /tmp/tradingbot-deploy.log 2>&1
+          code=$?
+          echo "$code" > /tmp/tradingbot-deploy.exit
+          exit "$code"
+          REMOTE_RUNNER
+
+          echo "Starting EC2 deploy script in the background..."
+          ssh "${SSH_OPTS[@]}" "$REMOTE" '
+            chmod +x /tmp/tradingbot-deploy.sh /tmp/tradingbot-deploy-runner.sh
+            nohup bash /tmp/tradingbot-deploy-runner.sh >/dev/null 2>&1 < /dev/null &
+            echo $! > /tmp/tradingbot-deploy.pid
+            echo "Started deploy pid $(cat /tmp/tradingbot-deploy.pid)"
+          '
+
+          echo "Polling EC2 deploy status..."
+          for attempt in {1..45}; do
+            echo "Deploy poll ${attempt}/45"
+
+            poll_output="$(ssh "${SSH_OPTS[@]}" "$REMOTE" '
+              if [ -f /tmp/tradingbot-deploy.exit ]; then
+                echo "EXIT_CODE=$(cat /tmp/tradingbot-deploy.exit)"
+              else
+                echo "EXIT_CODE=RUNNING"
+              fi
+              echo "--- deploy log tail ---"
+              tail -n 80 /tmp/tradingbot-deploy.log 2>/dev/null || true
+            ' || true)"
+
+            echo "$poll_output"
+
+            if echo "$poll_output" | grep -q '^EXIT_CODE=0$'; then
+              echo "EC2 deploy completed successfully."
+              exit 0
+            fi
+
+            if echo "$poll_output" | grep -q '^EXIT_CODE=[1-9]'; then
+              echo "EC2 deploy failed."
+              exit 1
+            fi
+
+            sleep 20
+          done
+
+          echo "EC2 deploy did not finish before workflow timeout window."
+          ssh "${SSH_OPTS[@]}" "$REMOTE" 'tail -n 200 /tmp/tradingbot-deploy.log 2>/dev/null || true' || true
+          exit 1
