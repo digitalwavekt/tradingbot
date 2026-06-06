@@ -1,233 +1,53 @@
-name: Deploy Full Stack to AWS EC2
+name: 🚀 Deploy to EC2 (Optimized)
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - "forex-ai-trading-bot/backend/**"
-      - "forex-ai-trading-bot/frontend/**"
-      - "forex-ai-trading-bot/docker-compose.yml"
-      - ".github/workflows/deploy-aws.yml"
-
-concurrency:
-  group: ec2-main-deploy
-  cancel-in-progress: true
 
 jobs:
   deploy:
-    name: Deploy full stack
     runs-on: ubuntu-latest
-    timeout-minutes: 25
 
     steps:
-      - name: Checkout
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH key
+      - name: 🔐 Setup SSH
         run: |
-          set -e
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/trading-backend.pem
-          chmod 600 ~/.ssh/trading-backend.pem
-          touch ~/.ssh/known_hosts
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-          for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
-              sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts
-              exit 0
-            fi
-
-            echo "ssh-keyscan failed on attempt ${attempt}/5; retrying..."
-            sleep 5
-          done
-
-          echo "ssh-keyscan failed after retries; SSH will use accept-new host key handling."
-
-      - name: Deploy on EC2
+      - name: 🚀 Deploy to EC2
         run: |
+          ssh -i ~/.ssh/key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+
           set -e
 
-          REMOTE="${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}"
-          SSH_OPTS=(
-            -i ~/.ssh/trading-backend.pem
-            -o StrictHostKeyChecking=accept-new
-            -o UserKnownHostsFile=~/.ssh/known_hosts
-            -o BatchMode=yes
-            -o ConnectTimeout=30
-            -o ConnectionAttempts=2
-            -o ServerAliveInterval=15
-            -o ServerAliveCountMax=4
-          )
+          echo "📍 Moving to project folder..."
+          cd /opt/tradingbot/forex-ai-trading-bot
 
-          ssh_retry() {
-            for attempt in 1 2 3 4 5; do
-              if ssh "${SSH_OPTS[@]}" "$@"; then
-                return 0
-              fi
+          echo "📥 Pulling latest code (main branch)..."
+          git fetch origin
+          git reset --hard origin/main
 
-              echo "ssh failed on attempt ${attempt}/5; retrying..."
-              sleep 20
-            done
+          echo "🧹 Cleaning old containers..."
+          docker compose down
 
-            return 1
-          }
+          echo "🐳 Building & starting containers..."
+          docker compose up --build -d
 
-          scp_retry() {
-            for attempt in 1 2 3 4 5; do
-              if scp "${SSH_OPTS[@]}" "$@"; then
-                return 0
-              fi
+          echo "⏳ Waiting for services..."
+          sleep 20
 
-              echo "scp failed on attempt ${attempt}/5; retrying..."
-              sleep 20
-            done
+          echo "📊 Container status:"
+          docker ps
 
-            return 1
-          }
+          echo "🧾 Backend logs:"
+          docker logs --tail 50 indian-market-ai-backend || true
 
-          cat > /tmp/tradingbot-deploy.sh <<'REMOTE_SCRIPT'
-              #!/usr/bin/env bash
-              set -e
+          echo "✅ Deploy finished"
 
-              cd /opt/tradingbot/forex-ai-trading-bot/backend
-
-              echo "Cleaning stale Docker build processes from previous interrupted deploys..."
-              stale_build_pids="$(pgrep -f '[d]ocker compose build' || true)"
-              if [ -n "$stale_build_pids" ]; then
-                echo "$stale_build_pids" | xargs -r sudo kill || true
-                sleep 3
-                echo "$stale_build_pids" | xargs -r sudo kill -9 || true
-              fi
-
-              echo "🚀 Starting deployment..."
-
-              echo "📥 Pulling latest code..."
-              git fetch origin main
-              git reset --hard origin/main
-
-              echo "🔐 Checking production env..."
-              test -f .env || (echo "❌ .env missing" && exit 1)
-              grep -q "MONGO_URI=" .env || (echo "❌ MONGO_URI missing" && exit 1)
-              grep -q "REDIS_URL=" .env || (echo "❌ REDIS_URL missing" && exit 1)
-              grep -q "JWT_ACCESS_SECRET=" .env || (echo "❌ JWT_ACCESS_SECRET missing" && exit 1)
-              grep -q "JWT_REFRESH_SECRET=" .env || (echo "❌ JWT_REFRESH_SECRET missing" && exit 1)
-
-              echo "📁 Fixing log permissions..."
-              sudo mkdir -p logs
-              sudo chown -R ubuntu:ubuntu logs || true
-              sudo find logs -type d -exec chmod 755 {} \; || true
-              sudo find logs -type f -exec chmod 644 {} \; || true
-
-              echo "🐳 Compose services:"
-              sudo docker compose config --services
-
-              echo "🐳 Building backend Docker image..."
-              timeout 420 sudo docker compose build --progress=plain backend
-
-              echo "🐳 Building frontend Docker image..."
-              timeout 420 sudo docker compose build --progress=plain frontend
-
-              echo "🧪 Syntax smoke test before replacing live backend..."
-              sudo docker compose run --rm --no-deps backend node -c src/server.js
-              sudo docker compose run --rm --no-deps backend node -c src/services/dhan/DhanHistoricalDataService.js
-              sudo docker compose run --rm --no-deps backend node -c src/controllers/marketController.js
-              sudo docker compose run --rm --no-deps backend node -c src/services/trading/TradeDecisionEngine.js
-
-              echo "🐳 Restarting backend and frontend services..."
-              sudo docker compose up -d --no-deps --force-recreate backend frontend
-
-              echo "🔄 Ensuring dependent services are running..."
-              sudo docker compose up -d redis nginx
-
-              echo "⏳ Waiting for API health..."
-              for i in {1..30}; do
-                echo "Health attempt $i/30"
-
-                if curl -fsS http://127.0.0.1:5000/api/health; then
-                  echo "✅ API health OK"
-                  sudo docker compose ps
-                  exit 0
-                fi
-
-                echo "❌ API not ready yet"
-                echo "Container status:"
-                sudo docker compose ps || true
-
-                echo "Recent backend logs:"
-                sudo docker compose logs --tail 120 backend || true
-
-                echo "Container inspect:"
-                sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
-
-                sleep 5
-              done
-
-              echo "🚨 API failed health check after 150 seconds"
-
-              echo "Final container status:"
-              sudo docker compose ps || true
-
-              echo "Final backend logs:"
-              sudo docker compose logs --tail 400 backend || true
-
-              echo "Final container inspect:"
-              sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
-
-              exit 1
-          REMOTE_SCRIPT
-
-          cat > /tmp/tradingbot-deploy-runner.sh <<'REMOTE_RUNNER'
-          #!/usr/bin/env bash
-          set +e
-          rm -f /tmp/tradingbot-deploy.exit
-          bash /tmp/tradingbot-deploy.sh > /tmp/tradingbot-deploy.log 2>&1
-          code=$?
-          echo "$code" > /tmp/tradingbot-deploy.exit
-          exit "$code"
-          REMOTE_RUNNER
-
-          echo "Uploading EC2 deploy scripts..."
-          scp_retry /tmp/tradingbot-deploy.sh /tmp/tradingbot-deploy-runner.sh "$REMOTE:/tmp/"
-
-          echo "Starting EC2 deploy script in the background..."
-          ssh_retry "$REMOTE" '
-            chmod +x /tmp/tradingbot-deploy.sh /tmp/tradingbot-deploy-runner.sh
-            nohup bash /tmp/tradingbot-deploy-runner.sh >/dev/null 2>&1 < /dev/null &
-            echo $! > /tmp/tradingbot-deploy.pid
-            echo "Started deploy pid $(cat /tmp/tradingbot-deploy.pid)"
-          '
-
-          echo "Polling EC2 deploy status..."
-          for attempt in {1..45}; do
-            echo "Deploy poll ${attempt}/45"
-
-            poll_output="$(ssh_retry "$REMOTE" '
-              if [ -f /tmp/tradingbot-deploy.exit ]; then
-                echo "EXIT_CODE=$(cat /tmp/tradingbot-deploy.exit)"
-              else
-                echo "EXIT_CODE=RUNNING"
-              fi
-              echo "--- deploy log tail ---"
-              tail -n 80 /tmp/tradingbot-deploy.log 2>/dev/null || true
-            ' || true)"
-
-            echo "$poll_output"
-
-            if echo "$poll_output" | grep -q '^EXIT_CODE=0$'; then
-              echo "EC2 deploy completed successfully."
-              exit 0
-            fi
-
-            if echo "$poll_output" | grep -q '^EXIT_CODE=[1-9]'; then
-              echo "EC2 deploy failed."
-              exit 1
-            fi
-
-            sleep 20
-          done
-
-          echo "EC2 deploy did not finish before workflow timeout window."
-          ssh_retry "$REMOTE" 'tail -n 200 /tmp/tradingbot-deploy.log 2>/dev/null || true' || true
-          exit 1
+          
