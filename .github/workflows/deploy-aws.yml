@@ -1,4 +1,4 @@
-name: 🚀 Deploy Trading Bot
+name: Deploy Trading Bot
 
 on:
   push:
@@ -10,37 +10,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
 
-    - name: 🐳 Setup Docker
-      uses: docker/setup-buildx-action@v3
+      - name: 🔐 Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_KEY }}" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-    - name: 🔑 Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: 🚀 Deploy to EC2
+        run: |
+          ssh -i ~/.ssh/key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
 
-    # 🔥 BUILD BACKEND
-    - name: 🏗 Build & Push Backend
-      run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/tradingbot-backend ./backend
-        docker push ${{ secrets.DOCKER_USERNAME }}/tradingbot-backend
-
-    # 🔥 BUILD FRONTEND
-    - name: 🏗 Build & Push Frontend
-      run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/tradingbot-frontend ./frontend
-        docker push ${{ secrets.DOCKER_USERNAME }}/tradingbot-frontend
-
-    # 🚀 DEPLOY TO EC2
-    - name: 🚀 Deploy to EC2
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ubuntu
-        key: ${{ secrets.EC2_KEY }}
-        script: |
           cd /opt/tradingbot/forex-ai-trading-bot
-          bash deploy.sh
+
+          echo "📥 Pull latest code..."
+          git fetch origin
+          git reset --hard origin/main
+
+          echo "🛑 Stop old containers..."
+          docker compose down
+
+          echo "🧹 Clean old images..."
+          docker system prune -af
+
+          echo "🐳 Build & Start..."
+          docker compose up -d --build
+
+          echo "📊 Running containers:"
+          docker ps
+
+        
