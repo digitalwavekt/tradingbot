@@ -118,6 +118,73 @@ export interface RiskConfig {
   isLiveTradingEnabled: boolean;
 }
 
+export interface AdminRuntimeStatus {
+  timestamp: string;
+  effectiveMode: TradingMode;
+  modeSource: 'env' | 'database' | 'default';
+  env: {
+    nodeEnv: string | null;
+    tradingMode: string | null;
+    allowLiveTrading: boolean;
+    enableLiveAuto: boolean;
+    aiEnabled: boolean;
+    ruleBasedTrading: boolean;
+    strategyMode: string;
+    defaultStrategy: string;
+    watchlistMode: string;
+    enableScheduler: boolean;
+    enableMarketSync: boolean;
+    enableCandleSync: boolean;
+    enableDhanHistoricalSync: boolean;
+    enableDhanAutoToken: boolean;
+    dhanClientConfigured: boolean;
+    dhanAccessTokenConfigured: boolean;
+  };
+  config: RiskConfig | null;
+  account: {
+    broker: string;
+    accountType: string;
+    accountId?: string;
+    isConnected: boolean;
+    healthCheckStatus?: string;
+    tokenStatus?: string;
+    authMode?: string;
+    lastTokenSource?: string;
+    tokenExpiry?: string;
+    apiLatencyMs?: number;
+    balance: number | null;
+    equity: number | null;
+    paperBalance: number | null;
+    paperEquity: number | null;
+    displayBalance: number | null;
+    displayEquity: number | null;
+    marginUsed: number | null;
+    freeMargin: number | null;
+    openPositions: number;
+    unrealizedPnl: number;
+    paperTradingDays: number;
+    paperTotalReturn: number;
+    updatedAt?: string;
+    lastConnectedAt?: string;
+    lastError?: string;
+    lastErrorAt?: string;
+  } | null;
+  trading: {
+    openPaperTrades: number;
+    pendingPaperTrades: number;
+    openTrades: number;
+    todayClosedTrades: number;
+    todayPnl: number;
+  };
+  watchlist: {
+    mode: string;
+    count: number;
+    hasTataMotors: boolean;
+    hasLtim: boolean;
+  };
+  systemHealth: SystemHealth[];
+}
+
 export interface AuditLog {
   id: string;
   action: string;

@@ -4,14 +4,18 @@ const BrokerAccount = require('../../models/BrokerAccount');
 const logger = require('../../utils/logger');
 
 const DEFAULT_CONFIG = [
-  { key: 'TRADING_MODE', value: process.env.TRADING_MODE || 'LEARNING', description: 'Current trading mode' },
+  { key: 'TRADING_MODE', value: process.env.TRADING_MODE || 'PAPER', description: 'Current trading mode' },
   { key: 'ALLOW_LIVE_TRADING', value: process.env.ALLOW_LIVE_TRADING === 'true', description: 'Admin live-trading unlock flag' },
+  { key: 'AI_ENABLED', value: process.env.AI_ENABLED === 'true', description: 'AI analysis enabled flag' },
+  { key: 'RULE_BASED_TRADING', value: process.env.RULE_BASED_TRADING !== 'false', description: 'Rule-based trading enabled flag' },
+  { key: 'STRATEGY_MODE', value: process.env.STRATEGY_MODE || 'RULE_BASED', description: 'Trading strategy mode' },
+  { key: 'DEFAULT_STRATEGY', value: process.env.DEFAULT_STRATEGY || 'MULTI_CONFIRMATION', description: 'Default rule-based strategy' },
   { key: 'ENABLE_KILL_SWITCH', value: process.env.ENABLE_KILL_SWITCH === 'true', description: 'Emergency kill switch state' },
-  { key: 'RISK_PER_TRADE', value: Number(process.env.RISK_PER_TRADE || 0.005), description: 'Default risk per trade' },
-  { key: 'MAX_RISK_PER_TRADE', value: Number(process.env.MAX_RISK_PER_TRADE || 0.01), description: 'Absolute max risk per trade' },
-  { key: 'DAILY_MAX_LOSS', value: Number(process.env.DAILY_MAX_LOSS || 0.02), description: 'Daily max loss limit' },
+  { key: 'RISK_PER_TRADE', value: Number(process.env.RISK_PER_TRADE || 0.01), description: 'Default risk per trade' },
+  { key: 'MAX_RISK_PER_TRADE', value: Number(process.env.MAX_RISK_PER_TRADE || 0.02), description: 'Absolute max risk per trade' },
+  { key: 'DAILY_MAX_LOSS', value: Number(process.env.DAILY_MAX_LOSS || 0.03), description: 'Daily max loss limit' },
   { key: 'WEEKLY_MAX_LOSS', value: Number(process.env.WEEKLY_MAX_LOSS || 0.05), description: 'Weekly max loss limit' },
-  { key: 'MAX_OPEN_TRADES', value: Number(process.env.MAX_OPEN_TRADES || 3), description: 'Max simultaneous open trades' },
+  { key: 'MAX_OPEN_TRADES', value: Number(process.env.MAX_OPEN_TRADES || 5), description: 'Max simultaneous open trades' },
   { key: 'MIN_RISK_REWARD', value: Number(process.env.MIN_RISK_REWARD || 2), description: 'Minimum risk reward ratio' }
 ];
 
@@ -27,10 +31,18 @@ async function bootstrapDefaults() {
   const botConfig = await BotConfig.findOne();
   if (!botConfig) {
     await BotConfig.create({
-      mode: process.env.TRADING_MODE || 'LEARNING',
+      mode: process.env.TRADING_MODE || 'PAPER',
       isLiveTradingEnabled: process.env.ALLOW_LIVE_TRADING === 'true',
       killSwitchTriggered: process.env.ENABLE_KILL_SWITCH === 'true',
-      activeBroker: 'PAPER'
+      activeBroker: 'PAPER',
+      aiEnabled: process.env.AI_ENABLED === 'true',
+      ruleBasedTrading: process.env.RULE_BASED_TRADING !== 'false',
+      strategyMode: process.env.STRATEGY_MODE || 'RULE_BASED',
+      defaultStrategy: process.env.DEFAULT_STRATEGY || 'MULTI_CONFIRMATION',
+      riskPerTradePercent: 1,
+      maxRiskPerTradePercent: 2,
+      dailyMaxLossPercent: 3,
+      maxOpenTrades: 5
     });
     logger.info('BotConfig defaults created');
   }

@@ -1,6 +1,11 @@
 const logger = require('../../utils/logger');
 const { RiskLog, BotConfig, Trade, BrokerAccount } = require('../../models');
 
+
+function getEffectiveMode(config) {
+  return config?.mode || process.env.TRADING_MODE || 'PAPER';
+}
+
 class RiskEngine {
   constructor() {
     this.config = null;
@@ -45,16 +50,20 @@ class RiskEngine {
     return Number.isFinite(n) ? n : fallback;
   }
 
+  getEffectiveMode() {
+    return process.env.TRADING_MODE || this.config?.mode || 'LEARNING';
+  }
+
   getAccountBalance() {
     if (!this.account) return Number(process.env.PAPER_TRADING_BALANCE || 100000);
-    return this.config.mode === 'PAPER'
+    return this.getEffectiveMode() === 'PAPER'
       ? this.safeNumber(this.account.paperBalance, Number(process.env.PAPER_TRADING_BALANCE || 100000))
       : this.safeNumber(this.account.balance, 100000);
   }
 
   getAccountEquity() {
     if (!this.account) return this.getAccountBalance();
-    return this.config.mode === 'PAPER'
+    return this.getEffectiveMode() === 'PAPER'
       ? this.safeNumber(this.account.paperEquity, this.getAccountBalance())
       : this.safeNumber(this.account.equity, this.getAccountBalance());
   }
@@ -104,6 +113,8 @@ class RiskEngine {
     const rejectionReasons = [];
 
     try {
+      await this.loadRiskState();
+
       const pushCheck = async (checkOrPromise) => {
         const check = await checkOrPromise;
         checks.push(check);
@@ -113,13 +124,16 @@ class RiskEngine {
       await pushCheck(this.checkKillSwitch());
       await pushCheck(this.checkTradingMode());
       await pushCheck(this.checkDailyLossLimit());
+      await pushCheck(this.checkNewEntryWindow());
       await pushCheck(this.checkWeeklyLossLimit());
       await pushCheck(this.checkMonthlyLossLimit());
       await pushCheck(this.checkMaxOpenTrades(signal.pair));
+      await pushCheck(this.checkDuplicateOpenPaperPair(signal.pair));
       await pushCheck(this.checkCorrelatedTrades(signal.pair));
       await pushCheck(this.checkRiskReward(signal));
       await pushCheck(this.checkStopLoss(signal));
       await pushCheck(this.checkTakeProfit(signal));
+      await pushCheck(this.checkTradeLevels(signal));
       await pushCheck(this.checkSpread(marketData));
       await pushCheck(this.checkVolatility(marketData));
       await pushCheck(this.checkLiquidity(marketData));
@@ -183,49 +197,70 @@ class RiskEngine {
   }
 
   async checkKillSwitch() {
-    const passed = !this.config.killSwitchTriggered;
+    const passed = !this.config?.killSwitchTriggered;
     return {
       name: 'KILL_SWITCH',
       passed,
-      value: this.config.killSwitchTriggered,
+      value: this.config?.killSwitchTriggered,
       threshold: false,
-      message: passed ? 'Kill switch not triggered' : `KILL SWITCH ACTIVE: ${this.config.killSwitchReason}`
+      message: passed ? 'Kill switch not triggered' : `KILL SWITCH ACTIVE: ${this.config?.killSwitchReason}`
     };
   }
 
   async checkTradingMode() {
-    const allowedModes = ['PAPER', 'DEMO', 'HUMAN_APPROVAL', 'LIVE_AUTO'];
-    const passed = allowedModes.includes(this.config.mode);
+    const effectiveMode = this.getEffectiveMode();
+    const allowedModes = ['PAPER', 'DEMO', 'HUMAN_APPROVAL'];
+    const passed = allowedModes.includes(effectiveMode) && process.env.ALLOW_LIVE_TRADING !== 'true';
     return {
       name: 'TRADING_MODE',
       passed,
-      value: this.config.mode,
+      value: effectiveMode,
       threshold: allowedModes,
-      message: passed ? `Mode ${this.config.mode} allows trading` : `Mode ${this.config.mode} does not allow trading`
+      message: passed ? `Mode ${effectiveMode} allows PAPER-safe trading` : `Mode ${effectiveMode} does not allow PAPER-safe trading`
     };
   }
 
   async checkDailyLossLimit() {
     const balance = this.getAccountBalance();
-    const dailyLossPercent = balance > 0 ? (this.riskState.dailyLoss / balance) * 100 : 0;
-    const limit = this.safeNumber(this.config.dailyMaxLossPercent, 2);
-    const passed = dailyLossPercent < limit;
+    const unrealizedPnl = this.riskState.openTrades.reduce((sum, t) => sum + this.safeNumber(t.monetaryPnl), 0);
+    const realizedPnl = this.safeNumber(this.riskState.dailyPnl, 0);
+    const realizedLossFallback = this.safeNumber(this.riskState.dailyLoss, 0);
+    const realizedComponent = realizedPnl !== 0 ? realizedPnl : -realizedLossFallback;
+    const totalPnl = realizedComponent + unrealizedPnl;
+    const lossPercent = balance > 0 && totalPnl < 0 ? (Math.abs(totalPnl) / balance) * 100 : 0;
+    const limit = this.safeNumber(this.config?.dailyMaxLossPercent, 3);
+    const passed = lossPercent < limit;
 
     return {
       name: 'DAILY_LOSS_LIMIT',
       passed,
-      value: `${dailyLossPercent.toFixed(2)}%`,
+      value: `${lossPercent.toFixed(2)}%`,
       threshold: `${limit}%`,
       message: passed
-        ? `Daily loss ${dailyLossPercent.toFixed(2)}% below limit ${limit}%`
-        : `DAILY LOSS LIMIT REACHED: ${dailyLossPercent.toFixed(2)}% >= ${limit}%`
+        ? `Daily realized+unrealized loss ${lossPercent.toFixed(2)}% below limit ${limit}%`
+        : `DAILY LOSS LIMIT REACHED: ${lossPercent.toFixed(2)}% >= ${limit}%`
+    };
+  }
+
+  checkNewEntryWindow() {
+    const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const day = ist.getDay();
+    const minutes = ist.getHours() * 60 + ist.getMinutes();
+    const passed = day !== 0 && day !== 6 && minutes >= 9 * 60 + 20 && minutes <= 15 * 60;
+
+    return {
+      name: 'NSE_ENTRY_WINDOW',
+      passed,
+      value: `${String(ist.getHours()).padStart(2, '0')}:${String(ist.getMinutes()).padStart(2, '0')} IST`,
+      threshold: '09:20-15:00 IST weekday',
+      message: passed ? 'NSE new-entry window is open' : 'Outside NSE new-entry window or in first 5 minutes'
     };
   }
 
   async checkWeeklyLossLimit() {
     const balance = this.getAccountBalance();
     const weeklyLossPercent = balance > 0 ? (this.riskState.weeklyLoss / balance) * 100 : 0;
-    const limit = this.safeNumber(this.config.weeklyMaxLossPercent, 5);
+    const limit = this.safeNumber(this.config?.weeklyMaxLossPercent, 5);
     const passed = weeklyLossPercent < limit;
 
     return {
@@ -242,7 +277,7 @@ class RiskEngine {
   async checkMonthlyLossLimit() {
     const balance = this.getAccountBalance();
     const monthlyLossPercent = balance > 0 ? (this.riskState.monthlyLoss / balance) * 100 : 0;
-    const limit = this.safeNumber(this.config.monthlyMaxLossPercent, 10);
+    const limit = this.safeNumber(this.config?.monthlyMaxLossPercent, 10);
     const passed = monthlyLossPercent < limit;
 
     return {
@@ -258,7 +293,7 @@ class RiskEngine {
 
   async checkMaxOpenTrades() {
     const openTradesCount = this.riskState.openTrades.length;
-    const limit = this.safeNumber(this.config.maxOpenTrades, 3);
+    const limit = this.safeNumber(this.config?.maxOpenTrades, 5);
     const passed = openTradesCount < limit;
 
     return {
@@ -272,10 +307,30 @@ class RiskEngine {
     };
   }
 
+  async checkDuplicateOpenPaperPair(pair) {
+    const normalizedPair = String(pair || '').toUpperCase();
+    const duplicate = await Trade.findOne({
+      pair: normalizedPair,
+      mode: 'PAPER',
+      status: { $in: ['OPEN', 'PENDING'] }
+    }).lean();
+
+    const passed = !duplicate;
+    return {
+      name: 'DUPLICATE_OPEN_PAPER_PAIR',
+      passed,
+      value: passed ? 0 : 1,
+      threshold: 0,
+      message: passed
+        ? `No open/pending PAPER trade for ${normalizedPair}`
+        : `Duplicate open/pending PAPER trade exists for ${normalizedPair}`
+    };
+  }
+
   async checkCorrelatedTrades(pair) {
     const base = String(pair || '').split('/')[0];
     const correlated = this.riskState.openTrades.filter(t => String(t.pair || '').startsWith(base));
-    const limit = this.safeNumber(this.config.maxCorrelatedTrades, 2);
+    const limit = this.safeNumber(this.config?.maxCorrelatedTrades, 2);
     const passed = correlated.length < limit;
 
     return {
@@ -291,7 +346,7 @@ class RiskEngine {
 
   checkRiskReward(signal) {
     const rr = this.safeNumber(signal.riskReward, 0);
-    const minRiskReward = this.safeNumber(this.config.minRiskReward, 2);
+    const minRiskReward = this.safeNumber(this.config?.minRiskReward, 2);
     const passed = rr >= minRiskReward;
 
     return {
@@ -335,6 +390,29 @@ class RiskEngine {
     };
   }
 
+  checkTradeLevels(signal) {
+    const direction = signal.direction;
+    const entry = Number(signal.entryPrice);
+    const stopLoss = Number(signal.stopLoss);
+    const takeProfit = Number(signal.takeProfit);
+    let passed = [entry, stopLoss, takeProfit].every((v) => Number.isFinite(v) && v > 0);
+
+    if (passed && direction === 'BUY') {
+      passed = stopLoss < entry && entry < takeProfit && stopLoss >= entry * 0.5 && takeProfit <= entry * 1.5;
+    }
+    if (passed && direction === 'SELL') {
+      passed = takeProfit < entry && entry < stopLoss && takeProfit >= entry * 0.5 && stopLoss <= entry * 1.5;
+    }
+
+    return {
+      name: 'SL_TP_REALISTIC',
+      passed,
+      value: { direction, entry, stopLoss, takeProfit },
+      threshold: 'Valid order and within 50%-150% entry bounds',
+      message: passed ? 'SL/TP levels are realistic' : 'Invalid or unrealistic SL/TP levels'
+    };
+  }
+
   checkSpread(marketData) {
     const spreadPips = this.safeNumber(marketData?.spreadPips, 0);
     const maxSpread = 3.0;
@@ -366,22 +444,23 @@ class RiskEngine {
 
   checkLiquidity(marketData) {
     const liquidity = marketData?.liquidity || 'NORMAL';
-    const passed = liquidity !== 'LOW';
+    const isPaperMode = (getEffectiveMode(this.config) || process.env.TRADING_MODE || 'PAPER') === 'PAPER';
+    const passed = isPaperMode ? true : liquidity !== 'LOW';
 
     return {
       name: 'LIQUIDITY_CHECK',
       passed,
       value: liquidity,
       threshold: 'NOT LOW',
-      message: passed ? `Liquidity ${liquidity} acceptable` : 'LIQUIDITY TOO LOW - AVOIDING TRADE'
+      message: liquidity === 'LOW' && isPaperMode ? 'LOW LIQUIDITY - PAPER WARNING ONLY' : (passed ? `Liquidity ${liquidity} acceptable` : 'LIQUIDITY TOO LOW - AVOIDING TRADE')
     };
   }
 
   async checkNewsSafety(pair) {
     const { NewsEvent } = require('../../models');
     const now = new Date();
-    const bufferBefore = this.safeNumber(this.config.newsBufferMinutesBefore, 30) * 60 * 1000;
-    const bufferAfter = this.safeNumber(this.config.newsBufferMinutesAfter, 60) * 60 * 1000;
+    const bufferBefore = this.safeNumber(this.config?.newsBufferMinutesBefore, 30) * 60 * 1000;
+    const bufferAfter = this.safeNumber(this.config?.newsBufferMinutesAfter, 60) * 60 * 1000;
 
     const parts = String(pair || '').split('/');
     const currencies = [parts[0], parts[1], 'ALL'].filter(Boolean);
@@ -411,7 +490,7 @@ class RiskEngine {
 
   checkConfidence(signal) {
     const confidence = this.safeNumber(signal.confidence, 0);
-    const minConfidence = this.safeNumber(this.config.minConfidenceScore, 65);
+    const minConfidence = this.safeNumber(this.config?.minConfidenceScore, 65);
     const passed = confidence >= minConfidence;
 
     return {
@@ -444,7 +523,7 @@ class RiskEngine {
   async checkBrokerHealth() {
     const brokerAccount = await BrokerAccount.findOne({ isActive: true });
     const isHealthy = brokerAccount && brokerAccount.healthCheckStatus === 'HEALTHY';
-    const passed = isHealthy || this.config.mode === 'PAPER';
+    const passed = isHealthy || this.getEffectiveMode() === 'PAPER';
 
     return {
       name: 'BROKER_HEALTH',
@@ -461,7 +540,7 @@ class RiskEngine {
     const balance = this.getAccountBalance();
     const equity = this.getAccountEquity();
     const drawdown = balance > 0 ? ((balance - equity) / balance) * 100 : 0;
-    const limit = this.safeNumber(this.config.maxDrawdownPercent, 10);
+    const limit = this.safeNumber(this.config?.maxDrawdownPercent, 10);
     const passed = drawdown < limit;
 
     return {
@@ -477,20 +556,20 @@ class RiskEngine {
 
   async checkMargin(signal) {
     const balance = this.getAccountBalance();
-    const maxMarginUsagePercent = this.safeNumber(this.config.maxMarginUsagePercent, 50);
+    const maxMarginUsagePercent = this.safeNumber(this.config?.maxMarginUsagePercent, 50);
 
     let projectedMarginUsage = 0;
 
-    if (this.config.mode !== 'PAPER') {
+    if (this.getEffectiveMode() !== 'PAPER') {
       const marginUsed = this.account ? this.safeNumber(this.account.marginUsed, 0) : 0;
       const positionSize = this.safeNumber(signal.positionSize, 0);
-      const leverage = Math.max(this.safeNumber(this.config.defaultLeverage, 1), 1);
+      const leverage = Math.max(this.safeNumber(this.config?.defaultLeverage, 1), 1);
       const estimatedMargin = (positionSize * 100000) / leverage;
       projectedMarginUsage = balance > 0 ? ((marginUsed + estimatedMargin) / balance) * 100 : 100;
     }
 
     if (!Number.isFinite(projectedMarginUsage)) {
-      projectedMarginUsage = this.config.mode === 'PAPER' ? 0 : 100;
+      projectedMarginUsage = this.getEffectiveMode() === 'PAPER' ? 0 : 100;
     }
 
     const passed = projectedMarginUsage < maxMarginUsagePercent;
@@ -509,7 +588,7 @@ class RiskEngine {
   async validatePositionSize(signal) {
     const balance = this.getAccountBalance();
     const riskPercent = this.safeNumber(signal.riskPercent, 0);
-    const maxRiskPerTradePercent = this.safeNumber(this.config.maxRiskPerTradePercent, 1);
+    const maxRiskPerTradePercent = this.safeNumber(this.config?.maxRiskPerTradePercent, 1);
     const riskAmount = balance * (riskPercent / 100);
     const maxRiskAmount = balance * (maxRiskPerTradePercent / 100);
 
@@ -591,11 +670,11 @@ class RiskEngine {
   async triggerKillSwitch(reason, triggeredBy = null) {
     logger.critical(`KILL SWITCH TRIGGERED: ${reason}`);
 
-    this.config.killSwitchTriggered = true;
-    this.config.killSwitchReason = reason;
-    this.config.killSwitchTriggeredAt = new Date();
-    this.config.killSwitchTriggeredBy = triggeredBy;
-    await this.config.save();
+    if (this.config) this.config.killSwitchTriggered = true;
+    if (this.config) this.config.killSwitchReason = reason;
+    if (this.config) this.config.killSwitchTriggeredAt = new Date();
+    if (this.config) this.config.killSwitchTriggeredBy = triggeredBy;
+    if (this.config) await this.config.save();
 
     const openTrades = await Trade.find({ status: { $in: ['OPEN', 'PENDING'] } });
     for (const trade of openTrades) {
@@ -627,11 +706,11 @@ class RiskEngine {
   }
 
   async resetKillSwitch(userId) {
-    this.config.killSwitchTriggered = false;
-    this.config.killSwitchReason = null;
-    this.config.killSwitchTriggeredAt = null;
-    this.config.killSwitchTriggeredBy = null;
-    await this.config.save();
+    if (this.config) this.config.killSwitchTriggered = false;
+    if (this.config) this.config.killSwitchReason = null;
+    if (this.config) this.config.killSwitchTriggeredAt = null;
+    if (this.config) this.config.killSwitchTriggeredBy = null;
+    if (this.config) await this.config.save();
 
     logger.info(`Kill switch reset by user ${userId}`);
 
@@ -658,11 +737,11 @@ class RiskEngine {
 
     const balance = this.getAccountBalance();
 
-    if (this.riskState.dailyLoss >= balance * (this.safeNumber(this.config.dailyMaxLossPercent, 2) / 100)) {
+    if (this.riskState.dailyLoss >= balance * (this.safeNumber(this.config?.dailyMaxLossPercent, 3) / 100)) {
       await this.triggerKillSwitch('Daily loss limit reached');
     }
 
-    if (this.riskState.weeklyLoss >= balance * (this.safeNumber(this.config.weeklyMaxLossPercent, 5) / 100)) {
+    if (this.riskState.weeklyLoss >= balance * (this.safeNumber(this.config?.weeklyMaxLossPercent, 5) / 100)) {
       await this.triggerKillSwitch('Weekly loss limit reached');
     }
 

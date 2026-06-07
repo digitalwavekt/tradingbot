@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   backend:
     build:
@@ -5,29 +7,40 @@ services:
       dockerfile: Dockerfile
     container_name: indian-market-ai-backend
     restart: unless-stopped
-    expose:
-      - "5000"
+    ports:
+      - "127.0.0.1:5000:5000"
+    env_file:
+      - ./backend/.env
     environment:
       - NODE_ENV=production
       - PORT=5000
-      - MONGO_URI=${MONGO_URI}
       - REDIS_URL=redis://redis:6379
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DHAN_CLIENT_ID=${DHAN_CLIENT_ID}
-      - DHAN_ACCESS_TOKEN=${DHAN_ACCESS_TOKEN}
-      - DHAN_API_BASE_URL=${DHAN_API_BASE_URL}
-      - DHAN_WS_URL=${DHAN_WS_URL}
-      - TRADING_MODE=${TRADING_MODE:-LEARNING}
+      - TRADING_MODE=${TRADING_MODE:-PAPER}
       - ALLOW_LIVE_TRADING=${ALLOW_LIVE_TRADING:-false}
+      - AI_ENABLED=${AI_ENABLED:-false}
+      - RULE_BASED_TRADING=${RULE_BASED_TRADING:-true}
+      - STRATEGY_MODE=${STRATEGY_MODE:-RULE_BASED}
+      - DEFAULT_STRATEGY=${DEFAULT_STRATEGY:-MULTI_CONFIRMATION}
       - ENABLE_KILL_SWITCH=${ENABLE_KILL_SWITCH:-false}
+      - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
+      - WATCHLIST_MODE=${WATCHLIST_MODE:-MANUAL}
+      - WATCHLIST_INDICES=${WATCHLIST_INDICES:-NIFTY50,SENSEX}
+      - MAX_SYMBOLS_PER_CYCLE=${MAX_SYMBOLS_PER_CYCLE:-15}
+      - SYMBOL_ANALYSIS_DELAY_MS=${SYMBOL_ANALYSIS_DELAY_MS:-2000}
+      - ENABLE_LEARNING_ANALYSIS=${ENABLE_LEARNING_ANALYSIS:-true}
+      - ENABLE_DHAN_AUTO_TOKEN=${ENABLE_DHAN_AUTO_TOKEN:-true}
+      - ENABLE_DHAN_HISTORICAL_SYNC=${ENABLE_DHAN_HISTORICAL_SYNC:-true}
+      - ENABLE_CANDLE_SYNC=${ENABLE_CANDLE_SYNC:-true}
+      - ENABLE_MARKET_SYNC=${ENABLE_MARKET_SYNC:-true}
+      - ANALYSIS_TIMEFRAMES=${ANALYSIS_TIMEFRAMES:-1m,5m,15m,1h,1D}
+      - REQUIRED_TIMEFRAMES=${REQUIRED_TIMEFRAMES:-15m,1h,1D}
+      - MIN_CANDLE_COUNT_15M=${MIN_CANDLE_COUNT_15M:-50}
+      - MIN_CANDLE_COUNT_1H=${MIN_CANDLE_COUNT_1H:-30}
+      - MIN_CANDLE_COUNT_1D=${MIN_CANDLE_COUNT_1D:-4}
     depends_on:
       - redis
     volumes:
       - ./backend/logs:/app/logs
-      - ./backend/.env:/app/.env
     networks:
       - indian-market-network
 
@@ -55,8 +68,6 @@ services:
     image: redis:7-alpine
     container_name: indian-market-ai-redis
     restart: unless-stopped
-    expose:
-      - "6379"
     volumes:
       - redis-data:/data
     networks:

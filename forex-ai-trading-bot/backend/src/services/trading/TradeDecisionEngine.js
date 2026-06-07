@@ -14,6 +14,7 @@ const technicalAnalysis = require('../analysis/TechnicalAnalysisEngine');
 const fundamentalAnalysis = require('../analysis/FundamentalAnalysisEngine');
 const aiEngine = require('../ai/AIReasoningEngine');
 const brokerLayer = require('../broker/BrokerAbstractionLayer');
+const ruleBasedDecisionEngine = require('./RuleBasedDecisionEngine');
 
 const INDIAN_EQUITY_SYMBOLS = new Set([
   'RELIANCE',
@@ -53,14 +54,47 @@ class TradeDecisionEngine {
   async initialize() {
     this.config = await BotConfig.findOne().sort({ updatedAt: -1 });
     await riskEngine.initialize();
-    await aiEngine.initialize();
+    if (this.isAiDecisionEnabled()) {
+      await aiEngine.initialize();
+    } else {
+      logger.info('RULE_BASED_DECISION_ENGINE_ACTIVE');
+    }
     await brokerLayer.initialize();
     logger.info('Trade Decision Engine initialized');
+  }
+
+  isRuleBasedMode() {
+    const strategyMode = String(process.env.STRATEGY_MODE || '').toUpperCase();
+    const defaultStrategy = String(process.env.DEFAULT_STRATEGY || '').toUpperCase();
+    return (
+      process.env.RULE_BASED_TRADING === 'true' ||
+      strategyMode === 'RULE_BASED' ||
+      defaultStrategy === 'MULTI_CONFIRMATION' ||
+      this.config?.aiEnabled === false ||
+      process.env.AI_ENABLED === 'false'
+    );
+  }
+
+  isAiDecisionEnabled() {
+    return process.env.AI_ENABLED !== 'false' && !this.isRuleBasedMode();
+  }
+
+  getEffectiveMode() {
+    const envMode = process.env.TRADING_MODE;
+    if (envMode) return envMode;
+    return this.config?.mode || 'LEARNING';
   }
 
   async analyzeAndDecide(pair) {
     try {
       logger.info(`Starting analysis for ${pair}`);
+
+      this.config = await BotConfig.findOne().sort({ updatedAt: -1 });
+
+      if (this.isRuleBasedMode()) {
+        logger.info('RULE_BASED_DECISION_ENGINE_ACTIVE');
+        return await this.analyzeWithRules(pair);
+      }
 
       const marketData = await this.getMarketData(pair);
       const technical = await technicalAnalysis.analyze(pair);
@@ -98,6 +132,91 @@ class TradeDecisionEngine {
         confidence: 0
       };
     }
+  }
+
+  async analyzeWithRules(pair) {
+    const ruleDecision = await ruleBasedDecisionEngine.analyze(pair);
+    logger.info(`Rule decision for ${pair}: ${ruleDecision.decision} - ${ruleDecision.reason}`);
+
+    const signal = this.buildRuleSignal(ruleDecision);
+
+    if (!['BUY', 'SELL'].includes(ruleDecision.decision)) {
+      const riskValidation = {
+        passed: false,
+        checks: [],
+        rejectionReasons: [ruleDecision.rejectionReason || ruleDecision.reason || 'Rule engine returned NO_TRADE']
+      };
+      const decision = await this.makeFinalDecision(signal, riskValidation);
+      await this.logDecision(decision, signal, riskValidation);
+      return decision;
+    }
+
+    const marketData = {
+      pair: signal.pair,
+      bid: signal.entryPrice,
+      ask: signal.entryPrice,
+      close: signal.entryPrice,
+      spread: 0,
+      spreadPips: 0,
+      volatilityRegime: 'NORMAL',
+      liquidity: 'HIGH',
+      latencyMs: 0,
+      source: 'RULE_BASED'
+    };
+
+    const riskValidation = await riskEngine.validateTrade(signal, marketData);
+    const decision = await this.makeFinalDecision(signal, riskValidation);
+    decision.strategy = ruleDecision.strategy;
+    decision.indicators = ruleDecision.indicators;
+    decision.votes = ruleDecision.votes;
+    await this.logDecision(decision, signal, riskValidation);
+    return decision;
+  }
+
+  buildRuleSignal(ruleDecision) {
+    const signalId = ruleDecision.signalId || generateId();
+    const direction = ['BUY', 'SELL'].includes(ruleDecision.decision) ? ruleDecision.decision : 'NO_TRADE';
+
+    return {
+      signalId,
+      pair: ruleDecision.pair,
+      direction,
+      entryPrice: ruleDecision.entry,
+      stopLoss: ruleDecision.stopLoss,
+      takeProfit: ruleDecision.takeProfit,
+      riskReward: ruleDecision.riskReward,
+      riskPercent: ruleDecision.riskPercent,
+      positionSize: ruleDecision.positionSize,
+      confidence: ruleDecision.confidence,
+      technicalAnalysis: {
+        rsi: ruleDecision.indicators?.rsi,
+        ema9: ruleDecision.indicators?.ema9,
+        ema21: ruleDecision.indicators?.ema21,
+        atr: ruleDecision.indicators?.atr,
+        trend: ruleDecision.votes?.find((v) => v.strategy === 'EMA_9_21_CROSSOVER')?.decision || 'NEUTRAL',
+        momentum: ruleDecision.votes?.find((v) => v.strategy === 'VWAP_RSI_MOMENTUM')?.decision || 'NEUTRAL',
+        volatilityRegime: 'NORMAL'
+      },
+      fundamentalAnalysis: {},
+      newsAnalysis: { upcomingEvents: [], recentEvents: [], newsImpactScore: 0, newsSafe: true, newsWarnings: [] },
+      aiAnalysis: {
+        marketSummary: 'AI disabled. Rule-based local indicator decision.',
+        tradeThesis: ruleDecision.reason,
+        reasonToEnter: direction === 'NO_TRADE' ? '' : ruleDecision.reason,
+        reasonToAvoid: direction === 'NO_TRADE' ? ruleDecision.rejectionReason || ruleDecision.reason : '',
+        confidencePercentage: ruleDecision.confidence,
+        finalRecommendation: direction
+      },
+      ruleAnalysis: {
+        strategy: ruleDecision.strategy,
+        indicators: ruleDecision.indicators,
+        votes: ruleDecision.votes
+      },
+      timeframeAlignment: { aligned: false },
+      status: 'PENDING',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000)
+    };
   }
 
   async getMarketData(pair) {
@@ -508,7 +627,7 @@ class TradeDecisionEngine {
       };
     }
 
-    if (signal.aiAnalysis?.finalRecommendation === 'NO_TRADE' || signal.aiAnalysis?.finalRecommendation === 'WAIT') {
+    if (!this.isRuleBasedMode() && (signal.aiAnalysis?.finalRecommendation === 'NO_TRADE' || signal.aiAnalysis?.finalRecommendation === 'WAIT')) {
       return {
         decision: 'NO_TRADE',
         pair: signal.pair,
@@ -559,7 +678,7 @@ class TradeDecisionEngine {
       };
     }
 
-    if (this.config?.mode === 'LEARNING') {
+    if (this.getEffectiveMode() === 'LEARNING') {
       return {
         decision: 'WAIT',
         pair: signal.pair,
@@ -576,7 +695,7 @@ class TradeDecisionEngine {
       };
     }
 
-    if (this.config?.mode === 'HUMAN_APPROVAL') {
+    if (this.getEffectiveMode() === 'HUMAN_APPROVAL') {
       await Signal.create({ ...signal, status: 'PENDING' });
 
       return {
@@ -605,7 +724,7 @@ class TradeDecisionEngine {
       riskPercent: signal.riskPercent,
       positionSize: signal.positionSize,
       confidence: signal.confidence,
-      reason: `All validation passed. ${signal.aiAnalysis?.tradeThesis || 'Technical and fundamental alignment confirmed.'}`,
+      reason: `All validation passed. ${signal.aiAnalysis?.tradeThesis || 'Rule-based technical confirmation.'}`,
       rejectionReason: '',
       signalId: signal.signalId
     };
@@ -614,6 +733,97 @@ class TradeDecisionEngine {
   async executeApprovedTrade(decision) {
     if (decision.decision !== 'BUY' && decision.decision !== 'SELL') {
       return null;
+    }
+
+    const effectiveModeForPaper = process.env.TRADING_MODE || this.config?.mode || 'PAPER';
+
+    if (effectiveModeForPaper === 'PAPER' || effectiveModeForPaper === 'DEMO') {
+      const tradeId = `PAPER_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+
+      const entry = Number(decision.entry);
+      const stopLoss = Number(decision.stopLoss);
+      const takeProfit = Number(decision.takeProfit);
+      const dir = String(decision.decision || '').toUpperCase();
+
+      const invalidBuy = dir === 'BUY' && (
+        !(stopLoss < entry && takeProfit > entry) ||
+        stopLoss < entry * 0.5 ||
+        takeProfit > entry * 1.5
+      );
+
+      const invalidSell = dir === 'SELL' && (
+        !(stopLoss > entry && takeProfit < entry) ||
+        stopLoss > entry * 1.5 ||
+        takeProfit < entry * 0.5
+      );
+
+      if (!entry || !stopLoss || !takeProfit || invalidBuy || invalidSell) {
+        logger.warn('PAPER_TRADE_SKIPPED_INVALID_SL_TP', {
+          pair: decision.pair,
+          direction: decision.decision,
+          entry,
+          stopLoss,
+          takeProfit
+        });
+
+        return {
+          success: false,
+          skipped: true,
+          reason: 'INVALID_SL_TP_FOR_PAPER_TRADE',
+          pair: decision.pair
+        };
+      }
+
+      const existingOpenPaperTrade = await Trade.findOne({
+        pair: decision.pair,
+        mode: 'PAPER',
+        status: { $in: ['OPEN', 'PENDING'] }
+      });
+
+      if (existingOpenPaperTrade) {
+        logger.warn('PAPER_TRADE_SKIPPED_DUPLICATE_OPEN_PAIR', {
+          pair: decision.pair,
+          tradeId: existingOpenPaperTrade.tradeId
+        });
+        return {
+          success: false,
+          skipped: true,
+          reason: 'DUPLICATE_OPEN_PAPER_PAIR',
+          pair: decision.pair
+        };
+      }
+
+      const trade = await Trade.create({
+        tradeId,
+        signalId: decision.signalId,
+        pair: decision.pair,
+        symbol: decision.pair,
+        side: decision.decision,
+        direction: decision.decision,
+        entryPrice: decision.entry,
+        stopLoss: decision.stopLoss,
+        takeProfit: decision.takeProfit,
+        riskReward: decision.riskReward,
+        riskPercent: decision.riskPercent,
+        positionSize: decision.positionSize,
+        quantity: decision.positionSize || 1,
+        status: 'OPEN',
+        mode: effectiveModeForPaper,
+        broker: 'PAPER',
+        brokerTicket: tradeId,
+        source: 'PAPER_SIMULATION',
+        openedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date()
+      });
+
+      await Signal.findOneAndUpdate(
+        { signalId: decision.signalId },
+        { status: 'EXECUTED' }
+      );
+
+      logger.info(`Paper trade opened: ${trade.tradeId} ${decision.pair} ${decision.decision}`);
+      return trade;
     }
 
     if (
@@ -643,14 +853,25 @@ class TradeDecisionEngine {
     }
 
     try {
-      const mode = this.config?.mode === 'PAPER'
+      const effectiveMode = this.getEffectiveMode();
+      const mode = effectiveMode === 'PAPER'
         ? 'PAPER'
-        : this.config?.mode === 'DEMO'
+        : effectiveMode === 'DEMO'
           ? 'DEMO'
           : 'LIVE';
 
+      if (mode !== 'PAPER' && process.env.ALLOW_LIVE_TRADING !== 'true') {
+        logger.warn('Trade execution skipped because live trading is disabled', {
+          pair: decision.pair,
+          mode: effectiveMode,
+          allowLiveTrading: process.env.ALLOW_LIVE_TRADING
+        });
+        return null;
+      }
+
       const tradeResult = await brokerLayer.executeTrade({
         pair: decision.pair,
+        symbol: decision.pair,
         direction: decision.decision,
         entryPrice: decision.entry,
         stopLoss: decision.stopLoss,

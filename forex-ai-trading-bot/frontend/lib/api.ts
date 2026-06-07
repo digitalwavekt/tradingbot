@@ -100,6 +100,7 @@ export const signalAPI = {
 
 export const adminAPI = {
   getConfig: () => api.get('/admin/config'),
+  getRuntimeStatus: () => api.get('/admin/runtime-status'),
   updateConfig: (data: any) => api.put('/admin/config', data),
   setMode: (mode: string) => api.post('/admin/mode', { mode }),
   enableLive: (enable: boolean) => api.post('/admin/enable-live', { enable }),
@@ -108,6 +109,12 @@ export const adminAPI = {
   getAuditLogs: (params?: any) => api.get('/admin/audit-logs', { params }),
   getRiskLogs: (params?: any) => api.get('/admin/risk-logs', { params }),
   getUsers: () => api.get('/admin/users'),
+};
+
+export const brokerAPI = {
+  getStatus: () => api.get('/broker/status'),
+  getDhanProfile: () => api.get('/broker/dhan/profile'),
+  getDhanFunds: () => api.get('/broker/dhan/funds'),
 };
 
 export const backtestAPI = {

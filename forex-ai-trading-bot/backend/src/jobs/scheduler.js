@@ -1,15 +1,58 @@
+const PaperMtmService = require("../services/trading/PaperMtmService");
 const dhanTokenService = require('../services/dhan/DhanTokenService');
 const cron = require('node-cron');
 const logger = require('../utils/logger');
 const marketDataCollector = require('../services/MarketDataCollector');
 const newsEngine = require('../services/NewsEngine');
 const tradeDecisionEngine = require('../services/trading/TradeDecisionEngine');
+const paperMtmService = require('../services/trading/PaperMtmService');
 const { BotConfig, BrokerAccount, SystemHealth } = require('../models');
+const { getWatchlist } = require('../config/watchlist');
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class Scheduler {
   constructor() {
     this.jobs = [];
     this.isRunning = false;
+    this.marketDataCursor = 0;
+    this.tradingAnalysisCursor = 0;
+  }
+
+  getMergedSymbols(config) {
+    const dbSymbols = Array.isArray(config?.allowedSymbols)
+      ? config.allowedSymbols
+      : [];
+
+    const indexSymbols = getWatchlist();
+
+    const mergedSymbols = [
+      ...dbSymbols,
+      ...indexSymbols
+    ]
+      .filter(Boolean)
+      .map((symbol) => String(symbol).trim().toUpperCase())
+      .filter(Boolean);
+
+    const uniqueSymbols = [...new Set(mergedSymbols)];
+
+    if (uniqueSymbols.length) return uniqueSymbols;
+
+    return ['RELIANCE', 'TCS', 'INFY'];
+  }
+
+  getNextBatch(symbols, cursorName, maxPerCycle) {
+    if (!Array.isArray(symbols) || symbols.length === 0) return [];
+
+    const safeMaxPerCycle = Math.max(1, Math.min(Number(maxPerCycle || 10), symbols.length));
+    const batch = [];
+
+    for (let i = 0; i < safeMaxPerCycle; i += 1) {
+      batch.push(symbols[this[cursorName]]);
+      this[cursorName] = (this[cursorName] + 1) % symbols.length;
+    }
+
+    return [...new Set(batch)];
   }
 
   start() {
@@ -28,7 +71,16 @@ class Scheduler {
         const config = await BotConfig.findOne().sort({ updatedAt: -1 });
         if (!config || config.killSwitchTriggered) return;
 
-        const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY'];
+        const allSymbols = this.getMergedSymbols(config);
+        const maxPerCycle = Number(process.env.MAX_MARKET_SYNC_SYMBOLS_PER_CYCLE || process.env.MAX_SYMBOLS_PER_CYCLE || 15);
+        const delayMs = Number(process.env.SYMBOL_ANALYSIS_DELAY_MS || 1500);
+        const symbols = this.getNextBatch(allSymbols, 'marketDataCursor', maxPerCycle);
+
+        logger.info('Market data sync cycle started', {
+          totalSymbols: allSymbols.length,
+          selectedThisCycle: symbols.length,
+          symbols
+        });
 
         if (process.env.ENABLE_MARKET_SYNC === 'true') {
           await marketDataCollector.collectLivePrices(symbols);
@@ -37,8 +89,14 @@ class Scheduler {
         if (process.env.ENABLE_CANDLE_SYNC === 'true') {
           for (const symbol of symbols) {
             for (const tf of ['1m', '5m', '15m']) {
-              await marketDataCollector.collectCandles(symbol, tf, 200);
+              try {
+                await marketDataCollector.collectCandles(symbol, tf, 200);
+              } catch (error) {
+                logger.error(`Candle sync failed for ${symbol} ${tf}: ${error.message}`);
+              }
             }
+
+            await sleep(delayMs);
           }
         }
       } catch (error) {
@@ -59,26 +117,55 @@ class Scheduler {
     this.jobs.push(cron.schedule('*/5 * * * *', async () => {
       try {
         const config = await BotConfig.findOne().sort({ updatedAt: -1 });
-        if (!config || config.mode === 'LEARNING' || config.killSwitchTriggered) return;
+        if (!config || config.killSwitchTriggered) return;
 
-        const symbols = config?.allowedSymbols || ['RELIANCE', 'TCS', 'INFY'];
+        const allowLearningAnalysis = process.env.ENABLE_LEARNING_ANALYSIS !== 'false';
+
+        if (config.mode === 'LEARNING' && !allowLearningAnalysis) {
+          logger.info('Trading analysis skipped because bot is in LEARNING mode and ENABLE_LEARNING_ANALYSIS=false');
+          return;
+        }
+
+        const allSymbols = this.getMergedSymbols(config);
+        const maxPerCycle = Number(process.env.MAX_ANALYSIS_SYMBOLS_PER_CYCLE || process.env.MAX_SYMBOLS_PER_CYCLE || 15);
+        const symbols = this.getNextBatch(allSymbols, 'tradingAnalysisCursor', maxPerCycle);
+
+        logger.info('Trading analysis cycle started', {
+          mode: config.mode,
+          totalSymbols: allSymbols.length,
+          selectedThisCycle: symbols.length,
+          symbols
+        });
+
         await tradeDecisionEngine.runAnalysisCycle(symbols);
       } catch (error) {
         logger.error(`Trading analysis error: ${error.message}`);
       }
     }));
+
+    // Paper MTM every minute
+    this.jobs.push(cron.schedule('* * * * *', async () => {
+      try {
+        if ((process.env.TRADING_MODE || '').toUpperCase() !== 'PAPER') return;
+        await paperMtmService.runCycle();
+      } catch (error) {
+        logger.error(`Paper MTM error: ${error.message}`);
+      }
+    }));
+
     // Dhan token refresh check every 2 hours
-this.jobs.push(cron.schedule('0 */2 * * *', async () => {
-  try {
-    if (process.env.ENABLE_DHAN_AUTO_TOKEN !== 'true') return;
+    this.jobs.push(cron.schedule('0 */2 * * *', async () => {
+      try {
+        if (process.env.ENABLE_DHAN_AUTO_TOKEN !== 'true') return;
 
-    await dhanTokenService.getValidToken();
+        await dhanTokenService.getValidToken();
 
-    logger.info('Dhan token auto-check completed');
-  } catch (error) {
-    logger.error(`Dhan token auto-refresh failed: ${error.message}`);
-  }
-}));
+        logger.info('Dhan token auto-check completed');
+      } catch (error) {
+        logger.error(`Dhan token auto-refresh failed: ${error.message}`);
+      }
+    }));
+
     // Health check every minute
     this.jobs.push(cron.schedule('* * * * *', async () => {
       try {
@@ -97,11 +184,25 @@ this.jobs.push(cron.schedule('0 */2 * * *', async () => {
       }
     }));
 
+
+  setInterval(async () => {
+    try {
+      await PaperMtmService.runOnce();
+    } catch (error) {
+      logger.error("Paper MTM scheduler failed", {
+        message: error.message,
+        stack: error.stack
+      });
+    }
+  }, 60 * 1000);
+
+  logger.info("Paper MTM scheduler started", { intervalMs: 60000 });
+
     logger.info('Scheduler started with all jobs');
   }
 
   stop() {
-    this.jobs.forEach(job => job.stop());
+    this.jobs.forEach((job) => job.stop());
     this.jobs = [];
     this.isRunning = false;
     logger.info('Scheduler stopped');
@@ -125,8 +226,9 @@ this.jobs.push(cron.schedule('0 */2 * * *', async () => {
 
   async dailyReset() {
     logger.info('Running daily reset');
-    // Reset daily counters, update paper trading days, etc.
+
     const accounts = await BrokerAccount.find({ isActive: true });
+
     for (const account of accounts) {
       account.paperTradingDays += 1;
       await account.save();

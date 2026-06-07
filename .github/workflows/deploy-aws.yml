@@ -1,99 +1,45 @@
-name: Deploy Backend to AWS EC2
+name: Deploy Trading Bot
 
 on:
   push:
     branches:
       - main
-    paths:
-      - "forex-ai-trading-bot/backend/**"
-      - ".github/workflows/deploy-aws.yml"
 
 jobs:
-  deploy:
-    name: Deploy backend
+  build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     steps:
-      - name: Checkout
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup SSH key
+      - name: 🔐 Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/trading-backend.pem
-          chmod 600 ~/.ssh/trading-backend.pem
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          echo "${{ secrets.EC2_KEY }}" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy on EC2
+      - name: 🚀 Deploy to EC2
         run: |
-          ssh -i ~/.ssh/trading-backend.pem \
-            -o StrictHostKeyChecking=yes \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'EOF'
-              set -e
+          ssh -i ~/.ssh/key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
 
-              cd /opt/tradingbot/forex-ai-trading-bot/backend
+          cd /opt/tradingbot/forex-ai-trading-bot
 
-              echo "🚀 Starting deployment..."
-              echo "📥 Pulling latest code..."
-              git fetch origin main
-              git reset --hard origin/main
+          echo "📥 Pull latest code..."
+          git fetch origin
+          git reset --hard origin/main
 
-              echo "🔐 Checking production env..."
-              test -f .env || (echo "❌ .env missing" && exit 1)
-              grep -q "MONGO_URI=" .env || (echo "❌ MONGO_URI missing" && exit 1)
-              grep -q "REDIS_URL=" .env || (echo "❌ REDIS_URL missing" && exit 1)
-              grep -q "JWT_ACCESS_SECRET=" .env || (echo "❌ JWT_ACCESS_SECRET missing" && exit 1)
-              grep -q "JWT_REFRESH_SECRET=" .env || (echo "❌ JWT_REFRESH_SECRET missing" && exit 1)
+          echo "🛑 Stop old containers..."
+          docker compose down
 
-              echo "📁 Fixing log permissions..."
-              mkdir -p logs
-              chmod -R 755 logs || true
+          echo "🧹 Clean old images..."
+          docker system prune -af
 
-              echo "🐳 Building Docker image..."
-              sudo docker compose build api
+          echo "🐳 Build & Start..."
+          docker compose up -d --build
 
-              echo "🧪 Syntax smoke test before replacing live container..."
-              sudo docker compose run --rm --no-deps api node -c src/server.js
-              sudo docker compose run --rm --no-deps api node -c src/services/dhan/DhanHistoricalDataService.js
-              sudo docker compose run --rm --no-deps api node -c src/controllers/marketController.js
-              sudo docker compose run --rm --no-deps api node -c src/services/trading/TradeDecisionEngine.js
+          echo "📊 Running containers:"
+          docker ps
 
-              echo "🐳 Restarting Docker services..."
-              sudo docker compose up -d --force-recreate
-
-              echo "⏳ Waiting for API health..."
-              for i in {1..30}; do
-                echo "Health attempt $i/30"
-
-                if curl -fsS http://127.0.0.1:5000/api/health; then
-                  echo "✅ API health OK"
-                  sudo docker compose ps
-                  exit 0
-                fi
-
-                echo "❌ API not ready yet"
-                echo "Container status:"
-                sudo docker compose ps || true
-
-                echo "Recent API logs:"
-                sudo docker logs --tail 120 tradingbot-api || true
-
-                echo "Container inspect:"
-                sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
-
-                sleep 5
-              done
-
-              echo "🚨 API failed health check after 150 seconds"
-              echo "Final container status:"
-              sudo docker compose ps || true
-
-              echo "Final API logs:"
-              sudo docker logs --tail 400 tradingbot-api || true
-
-              echo "Final container inspect:"
-              sudo docker inspect tradingbot-api --format='ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' || true
-
-              exit 1
-          EOF
+        
