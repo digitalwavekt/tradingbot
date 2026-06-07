@@ -11,4 +11,4 @@ RUN npm ci --omit=dev
 # ✅ Step 3: copy rest code
 COPY . .
 
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]
