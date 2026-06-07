@@ -2,20 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-
+# ✅ Step 1: copy only package files
 COPY package*.json ./
+
+# ✅ Step 2: install deps (cached)
 RUN npm ci --omit=dev
 
-COPY src/ ./src/
+# ✅ Step 3: copy rest code
+COPY . .
 
-RUN addgroup -g 1001 -S nodejs \
-  && adduser -S nodejs -u 1001 \
-  && mkdir -p /app/logs \
-  && chown -R nodejs:nodejs /app/logs
-
-USER nodejs
-
-EXPOSE 5000
-
-CMD ["node", "src/server.js"]
+CMD ["node", "server.js"]
