@@ -1,4 +1,14 @@
 node_modules
+npm-debug.log
+Dockerfile
+.dockerignore
 .git
-logs
+.gitignore
 .env
+dist
+build
+coverage
+*.log
+tmp
+.cache
+.next
