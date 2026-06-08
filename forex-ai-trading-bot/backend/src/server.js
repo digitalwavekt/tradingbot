@@ -27,18 +27,21 @@ function shouldInitializeAi() {
 }
 
 // Routes
-const authRoutes = require('./routes/auth');
-const tradeRoutes = require('./routes/trades');
-const signalRoutes = require('./routes/signals');
-const adminRoutes = require('./routes/admin');
+const authRoutes      = require('./routes/auth');
+const tradeRoutes     = require('./routes/trades');
+const signalRoutes    = require('./routes/signals');
+const adminRoutes     = require('./routes/admin');
 const dashboardRoutes = require('./routes/dashboard');
-const backtestRoutes = require('./routes/backtest');
-const healthRoutes = require('./routes/health');
-const brokerRoutes = require('./routes/broker');
-const marketRoutes = require('./routes/market');
+const backtestRoutes  = require('./routes/backtest');
+const healthRoutes    = require('./routes/health');
+const brokerRoutes    = require('./routes/broker');
+const marketRoutes    = require('./routes/market');
 
 // Jobs
 const scheduler = require('./jobs/scheduler');
+
+// WebSocket — FIX: imported from its own file (server.js no longer contains duplicate WS code)
+const { createWebSocketServer } = require('./websocket/server');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -76,7 +79,7 @@ function rejectMongoOperators(req, res, next) {
 app.set('trust proxy', 1);
 app.use(requestId);
 
-// Security middleware
+// Security
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -134,35 +137,33 @@ app.use(express.urlencoded({ extended: true, limit: '512kb' }));
 app.use(rejectMongoOperators);
 
 // Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/trades', tradeRoutes);
-app.use('/api/signals', signalRoutes);
-app.use('/api/admin', adminRoutes);
+app.use('/api/auth',      authRoutes);
+app.use('/api/trades',    tradeRoutes);
+app.use('/api/signals',   signalRoutes);
+app.use('/api/admin',     adminRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/backtest', backtestRoutes);
-app.use('/api/broker', brokerRoutes);
-app.use('/api/market', marketRoutes);
-app.use('/api/health', healthRoutes);
+app.use('/api/backtest',  backtestRoutes);
+app.use('/api/broker',    brokerRoutes);
+app.use('/api/market',    marketRoutes);
+app.use('/api/health',    healthRoutes);
 
-// WebSocket
-const { createWebSocketServer } = require('./websocket/server');
-
-// Error handling
-app.use((err, req, res, _next) => {
-  logger.error(`Unhandled error: ${err.message}`, { requestId: req.id, stack: err.stack });
-  res.status(err.status || 500).json({
-    requestId: req.id,
-    error: process.env.NODE_ENV === 'production' 
-      ? 'Internal server error' 
-      : err.message
-  });
-});
-
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Initialize
+// Global error handler
+app.use((err, req, res, _next) => {
+  logger.error(`Unhandled error: ${err.message}`, { requestId: req.id, stack: err.stack });
+  res.status(err.status || 500).json({
+    requestId: req.id,
+    error: process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
+      : err.message
+  });
+});
+
+// Service initialization
 async function initializeServices() {
   try {
     await connectDB();
@@ -174,7 +175,7 @@ async function initializeServices() {
     if (shouldInitializeAi()) {
       await aiEngine.initialize();
     } else {
-      logger.info('AI initialization skipped because rule-based trading is active');
+      logger.info('AI initialization skipped — rule-based trading is active');
     }
 
     if (process.env.ENABLE_SCHEDULER === 'true') {
@@ -213,11 +214,13 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error(`Unhandled Rejection at: ${promise}, reason: ${reason}`);
 });
 
+// Start server
 const server = app.listen(PORT, '0.0.0.0', async () => {
   logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
   await initializeServices();
 });
 
+// Attach WebSocket server
 createWebSocketServer(server);
 
 module.exports = app;

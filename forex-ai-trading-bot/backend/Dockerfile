@@ -1,21 +1,24 @@
 FROM node:20-alpine
 
+# Install wget for healthcheck
+RUN apk add --no-cache wget
+
 WORKDIR /app
 
-ENV NODE_ENV=production
-
+# Step 1: copy only package files (layer cache)
 COPY package*.json ./
+
+# Step 2: install production deps only
 RUN npm ci --omit=dev
 
-COPY src/ ./src/
+# Step 3: copy source
+COPY . .
 
-RUN addgroup -g 1001 -S nodejs \
-  && adduser -S nodejs -u 1001 \
-  && mkdir -p /app/logs \
-  && chown -R nodejs:nodejs /app/logs
-
-USER nodejs
-
+# Expose backend port
 EXPOSE 5000
+
+# Healthcheck — wait for /api/health to respond
+HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -qO- http://localhost:5000/api/health || exit 1
 
 CMD ["node", "src/server.js"]

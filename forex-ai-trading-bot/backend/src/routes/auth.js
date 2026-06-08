@@ -12,11 +12,13 @@ const {
   publicUser
 } = require('../utils/tokenService');
 
+// FIX: login schema — no min() on password (old users with shorter passwords can still login)
 const loginSchema = Joi.object({
   email: Joi.string().email().required(),
-  password: Joi.string().min(12).required()
+  password: Joi.string().required()
 });
 
+// Register schema (admin-created users) — strict password rules
 const registerSchema = Joi.object({
   email: Joi.string().email().required(),
   password: Joi.string().min(12).required()
@@ -28,8 +30,10 @@ const registerSchema = Joi.object({
   role: Joi.string().valid('admin', 'subadmin', 'user', 'auditor').optional()
 });
 
+// Public registration — same rules, no role field
 const publicRegisterSchema = registerSchema.fork(['role'], schema => schema.forbidden());
 
+// Admin-only: create user with any role
 router.post('/register', authenticate, authorize(['super_admin', 'admin']), async (req, res) => {
   try {
     const { error } = registerSchema.validate(req.body);
@@ -47,16 +51,14 @@ router.post('/register', authenticate, authorize(['super_admin', 'admin']), asyn
       severity: 'INFO', ipAddress: req.ip
     });
 
-    res.status(201).json({
-      message: 'User created',
-      user: publicUser(user)
-    });
+    res.status(201).json({ message: 'User created', user: publicUser(user) });
   } catch (error) {
     logger.error(`Registration error: ${error.message}`);
     res.status(500).json({ error: 'Registration failed' });
   }
 });
 
+// Public self-registration — role always 'user'
 router.post('/public-register', async (req, res) => {
   try {
     const { error } = publicRegisterSchema.validate(req.body);
@@ -83,6 +85,7 @@ router.post('/public-register', async (req, res) => {
   }
 });
 
+// Login
 router.post('/login', async (req, res) => {
   try {
     const { error } = loginSchema.validate(req.body);
@@ -92,12 +95,14 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email }).select('+password');
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    if (user.isLocked()) return res.status(423).json({ error: 'Account locked' });
+    if (user.isLocked()) return res.status(423).json({ error: 'Account temporarily locked. Try again later.' });
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      user.loginAttempts += 1;
-      if (user.loginAttempts >= 5) user.lockUntil = new Date(Date.now() + 30 * 60 * 1000);
+      user.loginAttempts = (user.loginAttempts || 0) + 1;
+      if (user.loginAttempts >= 5) {
+        user.lockUntil = new Date(Date.now() + 30 * 60 * 1000);
+      }
       await user.save();
       await AuditLog.create({
         action: 'LOGIN', userEmail: email,
@@ -107,6 +112,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    // Successful login — reset lock state
     user.loginAttempts = 0;
     user.lockUntil = undefined;
     user.lastLogin = new Date();
@@ -131,6 +137,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Refresh token
 router.post('/refresh', async (req, res) => {
   try {
     const { refreshToken } = req.body;
@@ -143,10 +150,12 @@ router.post('/refresh', async (req, res) => {
       user: publicUser(rotated.user)
     });
   } catch (error) {
+    logger.warn(`Token refresh failed: ${error.message}`);
     res.status(403).json({ error: 'Invalid refresh token' });
   }
 });
 
+// Get current user
 router.get('/me', authenticate, async (req, res) => {
   res.json({
     user: {
@@ -161,9 +170,12 @@ router.get('/me', authenticate, async (req, res) => {
   });
 });
 
+// Logout — revoke this refresh token
 router.post('/logout', authenticate, async (req, res) => {
   try {
-    await revokeRefreshToken(req.body?.refreshToken, 'logout');
+    if (req.body?.refreshToken) {
+      await revokeRefreshToken(req.body.refreshToken, 'logout');
+    }
     await AuditLog.create({
       action: 'LOGOUT',
       userId: req.user._id,
@@ -178,6 +190,7 @@ router.post('/logout', authenticate, async (req, res) => {
   }
 });
 
+// Logout all sessions
 router.post('/logout-all', authenticate, async (req, res) => {
   try {
     await revokeAllUserTokens(req.user.id, 'logout_all');
@@ -195,19 +208,33 @@ router.post('/logout-all', authenticate, async (req, res) => {
   }
 });
 
+// Change password
 router.post('/change-password', authenticate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'currentPassword and newPassword required' });
+    }
     const user = await User.findById(req.user._id).select('+password');
     const isMatch = await user.comparePassword(currentPassword);
     if (!isMatch) return res.status(401).json({ error: 'Current password incorrect' });
+
+    // Validate new password strength
+    const strongPassword = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{12,}$/;
+    if (!strongPassword.test(newPassword)) {
+      return res.status(400).json({
+        error: 'New password must be 12+ chars with uppercase, lowercase, number, and special character'
+      });
+    }
+
     user.password = newPassword;
     await user.save();
+
     await AuditLog.create({
       action: 'USER_UPDATE', userId: user._id, userEmail: user.email,
       details: { action: 'password_changed' }, severity: 'INFO', ipAddress: req.ip
     });
-    res.json({ message: 'Password changed' });
+    res.json({ message: 'Password changed successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Password change failed' });
   }

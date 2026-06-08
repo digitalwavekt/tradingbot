@@ -32,7 +32,6 @@ function createWebSocketServer(server) {
           }
           clients.get(clientId).subscriptions.add(data.channel);
 
-          // Send initial data
           if (data.channel === 'trades') {
             const trades = await Trade.find({ status: { $in: ['OPEN', 'PENDING'] } })
               .sort({ createdAt: -1 }).limit(20);
@@ -51,7 +50,9 @@ function createWebSocketServer(server) {
         }
 
         if (data.type === 'unsubscribe') {
-          clients.get(clientId).subscriptions.delete(data.channel);
+          if (clients.has(clientId)) {
+            clients.get(clientId).subscriptions.delete(data.channel);
+          }
         }
       } catch (error) {
         logger.error(`WebSocket message error: ${error.message}`);
@@ -64,15 +65,15 @@ function createWebSocketServer(server) {
     });
 
     ws.on('error', (error) => {
-      logger.error(`WebSocket error: ${error.message}`);
+      logger.error(`WebSocket error for ${clientId}: ${error.message}`);
     });
 
-    // Send welcome message
     ws.send(JSON.stringify({ type: 'connected', clientId }));
   });
 
-  // Broadcast function
-  setInterval(async () => {
+  // Broadcast every 5 seconds to subscribed clients
+  const broadcastInterval = setInterval(async () => {
+    if (clients.size === 0) return;
     try {
       const config = await BotConfig.findOne().sort({ updatedAt: -1 });
 
@@ -80,33 +81,44 @@ function createWebSocketServer(server) {
         if (client.ws.readyState !== 1) continue; // WebSocket.OPEN
 
         for (const channel of client.subscriptions) {
-          if (channel === 'market') {
-            const marketData = await MarketData.find().sort({ timestamp: -1 }).limit(10);
-            client.ws.send(JSON.stringify({ type: 'market', data: marketData }));
-          }
+          try {
+            if (channel === 'market') {
+              const marketData = await MarketData.find().sort({ timestamp: -1 }).limit(10);
+              client.ws.send(JSON.stringify({ type: 'market', data: marketData }));
+            }
 
-          if (channel === 'trades') {
-            const trades = await Trade.find({ status: { $in: ['OPEN', 'PENDING'] } })
-              .sort({ createdAt: -1 }).limit(20);
-            client.ws.send(JSON.stringify({ type: 'trades', data: trades }));
-          }
+            if (channel === 'trades') {
+              const trades = await Trade.find({ status: { $in: ['OPEN', 'PENDING'] } })
+                .sort({ createdAt: -1 }).limit(20);
+              client.ws.send(JSON.stringify({ type: 'trades', data: trades }));
+            }
 
-          if (channel === 'bot-status') {
-            client.ws.send(JSON.stringify({
-              type: 'bot-status',
-              data: {
-                mode: config?.mode || 'LEARNING',
-                killSwitch: config?.killSwitchTriggered || false,
-                isLiveEnabled: config?.isLiveTradingEnabled || false
-              }
-            }));
+            if (channel === 'bot-status') {
+              client.ws.send(JSON.stringify({
+                type: 'bot-status',
+                data: {
+                  mode: config?.mode || 'LEARNING',
+                  killSwitch: config?.killSwitchTriggered || false,
+                  isLiveEnabled: config?.isLiveTradingEnabled || false
+                }
+              }));
+            }
+          } catch (chanError) {
+            logger.error(`Broadcast error for channel ${channel}: ${chanError.message}`);
           }
         }
       }
     } catch (error) {
       logger.error(`WebSocket broadcast error: ${error.message}`);
     }
-  }, 5000); // Broadcast every 5 seconds
+  }, 5000);
+
+  // Clean up interval on server close
+  server.on('close', () => {
+    clearInterval(broadcastInterval);
+    clients.clear();
+    logger.info('WebSocket server closed');
+  });
 }
 
 async function authenticateSocket(req) {
@@ -141,7 +153,7 @@ function canSubscribe(user, channel) {
 }
 
 function broadcast(channel, data) {
-  for (const [clientId, client] of clients) {
+  for (const [, client] of clients) {
     if (client.ws.readyState === 1 && client.subscriptions.has(channel)) {
       client.ws.send(JSON.stringify({ type: channel, data }));
     }

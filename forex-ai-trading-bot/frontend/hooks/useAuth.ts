@@ -26,13 +26,24 @@ const getTokenExpiry = (token: string) => {
 };
 
 const setTokenCookie = (token: string) => {
-  document.cookie = `token=${token}; path=/; max-age=3600; SameSite=Lax`;
+  if (typeof document === 'undefined') return;
+  // FIX: max-age matches JWT access token expiry (15min = 900s)
+  document.cookie = `token=${token}; path=/; max-age=900; SameSite=Lax`;
 };
 
 const clearStoredAuth = () => {
+  if (typeof window === 'undefined') return;
   localStorage.removeItem('token');
   localStorage.removeItem('refreshToken');
   document.cookie = 'token=; path=/; max-age=0; SameSite=Lax';
+};
+
+const getStored = () => {
+  if (typeof window === 'undefined') return { token: null, refreshToken: null };
+  return {
+    token: localStorage.getItem('token'),
+    refreshToken: localStorage.getItem('refreshToken'),
+  };
 };
 
 interface AuthState {
@@ -40,52 +51,58 @@ interface AuthState {
   token: string | null;
   refreshToken: string | null;
   tokenExpiresAt: number | null;
-  refreshTokenExpiresAt: number | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
   refreshSession: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   token: null,
   refreshToken: null,
   tokenExpiresAt: null,
-  refreshTokenExpiresAt: null,
   isAuthenticated: false,
   isLoading: true,
 
   login: async (email, password) => {
+    // FIX: authAPI.login now hits /auth/login correctly
     const response = await authAPI.login(email, password);
     const token = response.data.accessToken || response.data.token;
     const { refreshToken, user } = response.data;
 
-    localStorage.setItem('token', token);
-    localStorage.setItem('refreshToken', refreshToken);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('token', token);
+      if (refreshToken) localStorage.setItem('refreshToken', refreshToken);
+    }
     setTokenCookie(token);
 
     set({
       user,
       token,
-      refreshToken,
+      refreshToken: refreshToken ?? null,
       tokenExpiresAt: getTokenExpiry(token),
-      refreshTokenExpiresAt: getTokenExpiry(refreshToken),
       isAuthenticated: true,
       isLoading: false,
     });
   },
 
-  logout: () => {
+  logout: async () => {
+    const { refreshToken } = get();
+    try {
+      // FIX: call backend logout to revoke refresh token
+      await authAPI.logout(refreshToken ?? undefined);
+    } catch {
+      // ignore errors — clear local state regardless
+    }
     clearStoredAuth();
     set({
       user: null,
       token: null,
       refreshToken: null,
       tokenExpiresAt: null,
-      refreshTokenExpiresAt: null,
       isAuthenticated: false,
       isLoading: false,
     });
@@ -93,21 +110,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   checkAuth: async () => {
+    const { token, refreshToken } = getStored();
+    if (!token) {
+      set({ isLoading: false });
+      return;
+    }
     try {
-      const token = localStorage.getItem('token');
-      const refreshToken = localStorage.getItem('refreshToken');
-      if (!token) {
-        set({ isLoading: false });
-        return;
-      }
-
       const response = await authAPI.me();
       set({
         user: response.data.user,
         token,
         refreshToken,
         tokenExpiresAt: getTokenExpiry(token),
-        refreshTokenExpiresAt: refreshToken ? getTokenExpiry(refreshToken) : null,
         isAuthenticated: true,
         isLoading: false,
       });
@@ -118,7 +132,6 @@ export const useAuthStore = create<AuthState>((set) => ({
         token: null,
         refreshToken: null,
         tokenExpiresAt: null,
-        refreshTokenExpiresAt: null,
         isAuthenticated: false,
         isLoading: false,
       });
@@ -126,22 +139,24 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   refreshSession: async () => {
-    const refreshToken = localStorage.getItem('refreshToken');
-    if (!refreshToken) throw new Error('Missing refresh token');
+    const storedRefresh = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+    if (!storedRefresh) throw new Error('Missing refresh token');
 
-    const response = await authAPI.refresh(refreshToken);
+    // FIX: authAPI.refresh now hits /auth/refresh correctly
+    const response = await authAPI.refresh(storedRefresh);
     const token = response.data.accessToken || response.data.token;
-    const nextRefreshToken = response.data.refreshToken || refreshToken;
+    const nextRefreshToken = response.data.refreshToken || storedRefresh;
 
-    localStorage.setItem('token', token);
-    if (nextRefreshToken) localStorage.setItem('refreshToken', nextRefreshToken);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('token', token);
+      if (nextRefreshToken) localStorage.setItem('refreshToken', nextRefreshToken);
+    }
     setTokenCookie(token);
 
     set({
       token,
       refreshToken: nextRefreshToken,
       tokenExpiresAt: getTokenExpiry(token),
-      refreshTokenExpiresAt: nextRefreshToken ? getTokenExpiry(nextRefreshToken) : null,
       isAuthenticated: true,
       isLoading: false,
     });

@@ -10,36 +10,51 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 🔐 Setup SSH
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_KEY }}" > ~/.ssh/key.pem
           chmod 600 ~/.ssh/key.pem
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-      - name: 🚀 Deploy to EC2
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
         run: |
           ssh -i ~/.ssh/key.pem ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
 
           cd /opt/tradingbot/forex-ai-trading-bot
 
-          echo "📥 Pull latest code..."
+          echo "Pull latest code..."
           git fetch origin
           git reset --hard origin/main
 
-          echo "🛑 Stop old containers..."
+          echo "Stop old containers..."
           docker compose down
 
-          echo "🧹 Clean old images..."
+          echo "Clean old images..."
           docker system prune -af
 
-          echo "🐳 Build & Start..."
-          docker compose up -d --build
+          echo "Build & Start..."
+          # FIX: pass NEXT_PUBLIC_API_URL so Next.js bakes it into the bundle
+          NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }} docker compose up -d --build
 
-          echo "📊 Running containers:"
+          echo "Wait for backend healthcheck..."
+          sleep 30
+
+          echo "Running containers:"
           docker ps
 
-        
+          echo "Backend health:"
+          docker exec indian-market-ai-backend wget -qO- http://localhost:5000/api/health || echo "Health check failed"
+
+          EOF
+
+      - name: Notify deploy status
+        if: always()
+        run: |
+          echo "Deploy to ${{ secrets.EC2_HOST }} finished with status: ${{ job.status }}"

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   backend:
     build:
@@ -17,6 +15,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - TRADING_MODE=${TRADING_MODE:-PAPER}
       - ALLOW_LIVE_TRADING=${ALLOW_LIVE_TRADING:-false}
+      - ENABLE_LIVE_AUTO=${ENABLE_LIVE_AUTO:-false}
       - AI_ENABLED=${AI_ENABLED:-false}
       - RULE_BASED_TRADING=${RULE_BASED_TRADING:-true}
       - STRATEGY_MODE=${STRATEGY_MODE:-RULE_BASED}
@@ -38,18 +37,28 @@ services:
       - MIN_CANDLE_COUNT_1H=${MIN_CANDLE_COUNT_1H:-30}
       - MIN_CANDLE_COUNT_1D=${MIN_CANDLE_COUNT_1D:-4}
     depends_on:
-      - redis
+      redis:
+        condition: service_started
     volumes:
       - ./backend/logs:/app/logs
     networks:
       - indian-market-network
+    # FIX: healthcheck so frontend waits for backend to be truly ready
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        INTERNAL_API_URL: http://backend:5000
+        # FIX: pass your EC2 public IP or domain here
+        # e.g. http://13.x.x.x  OR  https://trading.digitalwaveitsolution.online
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost}
     container_name: indian-market-ai-frontend
     restart: unless-stopped
     ports:
@@ -59,8 +68,12 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
       - INTERNAL_API_URL=http://backend:5000
+      # FIX: must match what was baked in at build time
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
+    # FIX: wait for backend to be healthy before starting frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - indian-market-network
 
@@ -68,10 +81,16 @@ services:
     image: redis:7-alpine
     container_name: indian-market-ai-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
     volumes:
       - redis-data:/data
     networks:
       - indian-market-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   nginx:
     image: nginx:alpine
@@ -79,13 +98,14 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-      - "443:443"
     volumes:
-      - ./deployment/nginx.conf:/etc/nginx/nginx.conf
-      - ./deployment/ssl:/etc/nginx/ssl
+      # FIX: mount the correct fixed nginx.conf
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - frontend
-      - backend
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
     networks:
       - indian-market-network
 

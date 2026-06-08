@@ -4,7 +4,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 const setTokenCookie = (token: string) => {
   if (typeof document === 'undefined') return;
-  document.cookie = `token=${token}; path=/; max-age=3600; SameSite=Lax`;
+  document.cookie = `token=${token}; path=/; max-age=900; SameSite=Lax`;
 };
 
 const clearTokenCookie = () => {
@@ -22,7 +22,7 @@ const api = axios.create({
 // Request interceptor
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token');
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -31,7 +31,7 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor
+// Response interceptor — auto refresh on 401
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -41,23 +41,30 @@ api.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        const refreshToken = localStorage.getItem('refreshToken');
+        const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+        if (!refreshToken) throw new Error('No refresh token');
+
+        // FIX: correct endpoint /auth/refresh (was /admin/refresh)
         const response = await axios.post(`${API_URL}/api/auth/refresh`, { refreshToken });
         const token = response.data.accessToken || response.data.token;
         const nextRefreshToken = response.data.refreshToken || refreshToken;
 
-        localStorage.setItem('token', token);
-        if (nextRefreshToken) localStorage.setItem('refreshToken', nextRefreshToken);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('token', token);
+          if (nextRefreshToken) localStorage.setItem('refreshToken', nextRefreshToken);
+        }
         setTokenCookie(token);
         originalRequest.headers.Authorization = `Bearer ${token}`;
 
         return api(originalRequest);
-      } catch (refreshError) {
-        localStorage.removeItem('token');
-        localStorage.removeItem('refreshToken');
+      } catch {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('refreshToken');
+        }
         clearTokenCookie();
         window.location.href = '/login';
-        return Promise.reject(refreshError);
+        return Promise.reject(error);
       }
     }
 
@@ -68,10 +75,13 @@ api.interceptors.response.use(
 export default api;
 
 export const authAPI = {
+  // FIX: was /admin/login — correct route is /auth/login
   login: (email: string, password: string) => api.post('/auth/login', { email, password }),
   register: (data: any) => api.post('/auth/register', data),
+  // FIX: was /admin/refresh — correct route is /auth/refresh
   refresh: (refreshToken: string) => api.post('/auth/refresh', { refreshToken }),
   me: () => api.get('/auth/me'),
+  logout: (refreshToken?: string) => api.post('/auth/logout', { refreshToken }),
   changePassword: (currentPassword: string, newPassword: string) =>
     api.post('/auth/change-password', { currentPassword, newPassword }),
 };

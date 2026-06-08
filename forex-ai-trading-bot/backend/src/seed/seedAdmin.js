@@ -17,23 +17,31 @@ async function seedAdmin() {
 
     await mongoose.connect(mongoUri);
 
-    const deleted = await User.deleteMany({
-      $or: [
-        { role: { $in: ['super_admin', 'admin'] } },
-        { email: adminEmail }
-      ]
-    });
+    // FIX: Use upsert instead of deleteMany — never wipe existing admins
+    // Only create if not exists; if exists, update name only (never overwrite password blindly)
+    const existing = await User.findOne({ email: adminEmail });
 
-    const admin = await User.create({
-      name: adminName,
-      email: adminEmail,
-      password: adminPassword,
-      role: 'super_admin',
-      isActive: true
-    });
-
-    console.log(`Deleted old admin records: ${deleted.deletedCount}`);
-    console.log(`Seeded super admin: ${admin.email} (${admin._id})`);
+    if (existing) {
+      existing.name = adminName;
+      existing.role = 'super_admin';
+      existing.isActive = true;
+      // Only update password if FORCE_SEED_PASSWORD=true is set explicitly
+      if (process.env.FORCE_SEED_PASSWORD === 'true') {
+        existing.password = adminPassword;
+        console.log('Password updated (FORCE_SEED_PASSWORD=true)');
+      }
+      await existing.save();
+      console.log(`Updated existing super admin: ${existing.email} (${existing._id})`);
+    } else {
+      const admin = await User.create({
+        name: adminName,
+        email: adminEmail,
+        password: adminPassword,
+        role: 'super_admin',
+        isActive: true
+      });
+      console.log(`Created super admin: ${admin.email} (${admin._id})`);
+    }
 
     await mongoose.disconnect();
     process.exit(0);

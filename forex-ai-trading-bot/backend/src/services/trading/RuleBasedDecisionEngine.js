@@ -32,15 +32,19 @@ class RuleBasedDecisionEngine {
     this.strategy = process.env.DEFAULT_STRATEGY || 'MULTI_CONFIRMATION';
   }
 
+  // FIX: close entry at 14:30 IST (was 15:00) — need 30min buffer for exit before market close
   isEntryWindow(date = new Date()) {
     const ist = nowIst(date);
     const day = ist.getDay();
     const minutes = getIstMinutes(date);
-    return day !== 0 && day !== 6 && minutes >= 9 * 60 + 20 && minutes <= 15 * 60;
+    // Mon–Fri, 09:20–14:30 IST only
+    return day !== 0 && day !== 6 && minutes >= 9 * 60 + 20 && minutes <= 14 * 60 + 30;
   }
 
+  // ORB: valid after 09:45 (first 30min candle formed)
   isOrbWindow(date = new Date()) {
-    return getIstMinutes(date) >= 9 * 60 + 45 && getIstMinutes(date) <= 15 * 60;
+    const minutes = getIstMinutes(date);
+    return minutes >= 9 * 60 + 45 && minutes <= 14 * 60 + 30;
   }
 
   noTrade(pair, reason, extra = {}) {
@@ -68,7 +72,7 @@ class RuleBasedDecisionEngine {
     const signalId = generateId();
 
     if (!this.isEntryWindow()) {
-      return this.noTrade(normalizedPair, 'Outside NSE new-entry window 09:20-15:00 IST', { signalId });
+      return this.noTrade(normalizedPair, 'Outside NSE new-entry window 09:20–14:30 IST', { signalId });
     }
 
     const [candles5m, candles15m, candles1h] = await Promise.all([
@@ -160,6 +164,20 @@ class RuleBasedDecisionEngine {
       return this.noTrade(normalizedPair, reason, { signalId, indicators: outputIndicators, votes });
     }
 
+    // FIX: Check if SELL is allowed (NSE equity CNC accounts cannot short)
+    if (direction === 'SELL') {
+      const config = await BotConfig.findOne().sort({ updatedAt: -1 }).lean();
+      const productType = config?.defaultProductType || process.env.DEFAULT_PRODUCT_TYPE || 'INTRADAY';
+      const allowShort = config?.allowShortSelling === true && productType === 'INTRADAY';
+      if (!allowShort) {
+        return this.noTrade(
+          normalizedPair,
+          'SELL signal blocked: short selling not enabled. Enable allowShortSelling in BotConfig for INTRADAY accounts.',
+          { signalId, indicators: outputIndicators, votes }
+        );
+      }
+    }
+
     const levels = await this.buildRiskLevels({ pair: normalizedPair, direction, entry, atr });
     if (!levels.valid) {
       return this.noTrade(normalizedPair, levels.reason, { signalId, indicators: outputIndicators, votes });
@@ -187,13 +205,27 @@ class RuleBasedDecisionEngine {
   }
 
   momentumVote(ctx) {
-    if (ctx.entry > ctx.vwap && ctx.currentRsi > 50 && ctx.currentRsi < 70 && ctx.currentRsi > ctx.previousRsi && ctx.latestVolume >= ctx.avgVolume * 0.8) {
+    if (
+      ctx.entry > ctx.vwap &&
+      ctx.currentRsi > 50 &&
+      ctx.currentRsi < 70 &&
+      ctx.currentRsi > ctx.previousRsi &&
+      ctx.latestVolume >= ctx.avgVolume * 0.8
+    ) {
       return { strategy: 'VWAP_RSI_MOMENTUM', decision: 'BUY', reason: 'Close above VWAP with rising RSI and valid volume' };
     }
-    if (ctx.entry < ctx.vwap && ctx.currentRsi < 40 && ctx.currentRsi < ctx.previousRsi) {
+    if (
+      ctx.entry < ctx.vwap &&
+      ctx.currentRsi < 40 &&
+      ctx.currentRsi < ctx.previousRsi
+    ) {
       return { strategy: 'VWAP_RSI_MOMENTUM', decision: 'SELL', reason: 'Close below VWAP with falling RSI' };
     }
-    return { strategy: 'VWAP_RSI_MOMENTUM', decision: 'NO_TRADE', reason: ctx.currentRsi >= 70 ? 'RSI overbought for BUY' : 'Momentum conditions not met' };
+    return {
+      strategy: 'VWAP_RSI_MOMENTUM',
+      decision: 'NO_TRADE',
+      reason: ctx.currentRsi >= 70 ? 'RSI overbought for BUY' : 'Momentum conditions not met'
+    };
   }
 
   emaVote(ctx) {
@@ -247,16 +279,18 @@ class RuleBasedDecisionEngine {
     const capital = Number(account?.paperBalance || process.env.PAPER_TRADING_BALANCE || DEFAULT_CAPITAL);
     const riskPercent = Math.min(Number(config?.riskPerTradePercent || process.env.RISK_PER_TRADE_PERCENT || 1), 2);
     const riskAmount = capital * (riskPercent / 100);
-    const stopDistance = atr * 1.5;
 
-    let stopLoss;
-    let takeProfit;
+    // FIX: ATR 2x stop (was 1.5x) — Indian stocks intraday noise is higher
+    const stopDistance = atr * 2;
+
+    let stopLoss, takeProfit;
     if (direction === 'BUY') {
-      stopLoss = entry - stopDistance;
-      takeProfit = entry + atr * 3;
+      stopLoss   = entry - stopDistance;
+      // FIX: TP = ATR 4x (was 3x) — maintains 2:1 RR with wider SL
+      takeProfit = entry + atr * 4;
     } else {
-      stopLoss = entry + stopDistance;
-      takeProfit = entry - atr * 3;
+      stopLoss   = entry + stopDistance;
+      takeProfit = entry - atr * 4;
     }
 
     const riskPerShare = Math.abs(entry - stopLoss);
@@ -273,11 +307,8 @@ class RuleBasedDecisionEngine {
       positionSize
     };
 
-    return {
-      ...levels,
-      valid: this.validateLevels({ pair, direction, ...levels }).valid,
-      reason: this.validateLevels({ pair, direction, ...levels }).reason
-    };
+    const validation = this.validateLevels({ pair, direction, ...levels });
+    return { ...levels, valid: validation.valid, reason: validation.reason };
   }
 
   validateLevels({ direction, entry, stopLoss, takeProfit, riskReward, positionSize }) {
@@ -285,8 +316,8 @@ class RuleBasedDecisionEngine {
       return { valid: false, reason: 'Invalid numeric risk values' };
     }
     if (positionSize < 1) return { valid: false, reason: 'Calculated quantity below 1' };
-    if (riskReward < 2) return { valid: false, reason: `Risk reward ${riskReward} below 2` };
-    if (direction === 'BUY' && !(stopLoss < entry && entry < takeProfit)) return { valid: false, reason: 'Invalid BUY SL/TP ordering' };
+    if (riskReward < 2) return { valid: false, reason: `Risk reward ${riskReward} below minimum 2:1` };
+    if (direction === 'BUY'  && !(stopLoss < entry && entry < takeProfit)) return { valid: false, reason: 'Invalid BUY SL/TP ordering' };
     if (direction === 'SELL' && !(takeProfit < entry && entry < stopLoss)) return { valid: false, reason: 'Invalid SELL SL/TP ordering' };
     if (Math.min(stopLoss, takeProfit) < entry * 0.5) return { valid: false, reason: 'SL/TP below realistic lower bound' };
     if (Math.max(stopLoss, takeProfit) > entry * 1.5) return { valid: false, reason: 'SL/TP above realistic upper bound' };
