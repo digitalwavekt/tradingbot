@@ -43,7 +43,6 @@ services:
       - ./backend/logs:/app/logs
     networks:
       - indian-market-network
-    # FIX: healthcheck so frontend waits for backend to be truly ready
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/health"]
       interval: 15s
@@ -56,8 +55,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # FIX: pass your EC2 public IP or domain here
-        # e.g. http://13.x.x.x  OR  https://trading.digitalwaveitsolution.online
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost}
     container_name: indian-market-ai-frontend
     restart: unless-stopped
@@ -68,9 +65,7 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
       - INTERNAL_API_URL=http://backend:5000
-      # FIX: must match what was baked in at build time
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
-    # FIX: wait for backend to be healthy before starting frontend
     depends_on:
       backend:
         condition: service_healthy
@@ -92,7 +87,7 @@ services:
       timeout: 5s
       retries: 5
 
-    nginx:
+  nginx:
     image: nginx:alpine
     container_name: indian-market-ai-nginx
     restart: unless-stopped
@@ -103,6 +98,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+      frontend:
+        condition: service_started
     networks:
       - indian-market-network
 
