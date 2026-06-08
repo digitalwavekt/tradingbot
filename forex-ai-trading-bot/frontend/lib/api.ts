@@ -40,17 +40,11 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
 
-      try {
-<<<<<<< HEAD
-        const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
-        if (!refreshToken) throw new Error('No refresh token');
+      try {const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+    if (!refreshToken) throw new Error('No refresh token');
 
-        // FIX: correct endpoint /auth/refresh (was /admin/refresh)
-        const response = await axios.post(`${API_URL}/api/auth/refresh`, { refreshToken });
-=======
-        const refreshToken = localStorage.getItem('refreshToken');
-        const response = await axios.post(`${API_URL}/api/admin/refresh`, { refreshToken });
->>>>>>> 6b324e2a39decd8274cede4cf62e93ef81993c9b
+    // FIX: correct endpoint /auth/refresh (was /admin/refresh)
+    const response = await axios.post(`${API_URL}/api/auth/refresh`, { refreshToken });
         const token = response.data.accessToken || response.data.token;
         const nextRefreshToken = response.data.refreshToken || refreshToken;
 
@@ -80,21 +74,12 @@ api.interceptors.response.use(
 export default api;
 
 export const authAPI = {
-<<<<<<< HEAD
-  // FIX: was /admin/login — correct route is /auth/login
-  login: (email: string, password: string) => api.post('/auth/login', { email, password }),
-  register: (data: any) => api.post('/auth/register', data),
-  // FIX: was /admin/refresh — correct route is /auth/refresh
-  refresh: (refreshToken: string) => api.post('/auth/refresh', { refreshToken }),
-=======
-  login: (email: string, password: string) => api.post('/admin/login', { email, password }),
-  register: (data: any) => api.post('/auth/register', data),
-  refresh: (refreshToken: string) => api.post('/admin/refresh', { refreshToken }),
->>>>>>> 6b324e2a39decd8274cede4cf62e93ef81993c9b
-  me: () => api.get('/auth/me'),
-  logout: (refreshToken?: string) => api.post('/auth/logout', { refreshToken }),
-  changePassword: (currentPassword: string, newPassword: string) =>
-    api.post('/auth/change-password', { currentPassword, newPassword }),
+   // FIX: was /admin/login — correct route is /auth/login
+   login: (email: string, password: string) => api.post('/auth/login', { email, password }),
+   register: (data: any) => api.post('/auth/register', data),
+
+   // FIX: was /admin/refresh — correct route is /auth/refresh
+   refresh: (refreshToken: string) => api.post('/auth/refresh', { refreshToken }),
 };
 
 export const dashboardAPI = {
