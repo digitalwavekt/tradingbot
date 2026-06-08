@@ -7,7 +7,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const checkAuth = useAuthStore((state) => state.checkAuth);
   const refreshSession = useAuthStore((state) => state.refreshSession);
   const tokenExpiresAt = useAuthStore((state) => state.tokenExpiresAt);
-  const refreshTokenExpiresAt = useAuthStore((state) => state.refreshTokenExpiresAt);
+ const refreshTokenExpiresAt = useAuthStore((state) => state.tokenExpiresAt);
 
   useEffect(() => {
     checkAuth();
