@@ -42,7 +42,7 @@ api.interceptors.response.use(
 
       try {
         const refreshToken = localStorage.getItem('refreshToken');
-        const response = await axios.post(`${API_URL}/api/auth/refresh`, { refreshToken });
+        const response = await axios.post(`${API_URL}/api/admin/refresh`, { refreshToken });
         const token = response.data.accessToken || response.data.token;
         const nextRefreshToken = response.data.refreshToken || refreshToken;
 
@@ -68,9 +68,9 @@ api.interceptors.response.use(
 export default api;
 
 export const authAPI = {
-  login: (email: string, password: string) => api.post('/auth/login', { email, password }),
+  login: (email: string, password: string) => api.post('/admin/login', { email, password }),
   register: (data: any) => api.post('/auth/register', data),
-  refresh: (refreshToken: string) => api.post('/auth/refresh', { refreshToken }),
+  refresh: (refreshToken: string) => api.post('/admin/refresh', { refreshToken }),
   me: () => api.get('/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
     api.post('/auth/change-password', { currentPassword, newPassword }),
