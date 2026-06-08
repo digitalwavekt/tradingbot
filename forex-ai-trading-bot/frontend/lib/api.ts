@@ -74,12 +74,23 @@ api.interceptors.response.use(
 export default api;
 
 export const authAPI = {
-   // FIX: was /admin/login — correct route is /auth/login
-   login: (email: string, password: string) => api.post('/auth/login', { email, password }),
-   register: (data: any) => api.post('/auth/register', data),
+  login: (email: string, password: string) =>
+    api.post('/auth/login', { email, password }),
 
-   // FIX: was /admin/refresh — correct route is /auth/refresh
-   refresh: (refreshToken: string) => api.post('/auth/refresh', { refreshToken }),
+  register: (data: any) =>
+    api.post('/auth/register', data),
+
+  refresh: (refreshToken: string) =>
+    api.post('/auth/refresh', { refreshToken }),
+
+  logout: () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('refreshToken');
+    clearTokenCookie();
+    return Promise.resolve({ success: true });
+  },
+
+  me: () => api.get('/auth/me'),
 };
 
 export const dashboardAPI = {

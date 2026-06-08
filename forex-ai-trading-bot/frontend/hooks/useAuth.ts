@@ -93,7 +93,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { refreshToken } = get();
     try {
       // FIX: call backend logout to revoke refresh token
-      await authAPI.logout(refreshToken ?? undefined);
+      await authAPI.logout();
     } catch {
       // ignore errors — clear local state regardless
     }
