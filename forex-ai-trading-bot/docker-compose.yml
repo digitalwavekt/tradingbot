@@ -92,19 +92,15 @@ services:
       timeout: 5s
       retries: 5
 
-  nginx:
+ nginx:
     image: nginx:alpine
     container_name: indian-market-ai-nginx
     restart: unless-stopped
     ports:
       - "80:80"
     volumes:
-<<<<<<< HEAD
       # FIX: mount the correct fixed nginx.conf
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-=======
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
->>>>>>> 6b324e2a39decd8274cede4cf62e93ef81993c9b
     depends_on:
       frontend:
         condition: service_started
