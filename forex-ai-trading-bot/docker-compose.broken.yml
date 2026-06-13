@@ -13,7 +13,6 @@ services:
       - NODE_ENV=production
       - PORT=5000
       - REDIS_URL=redis://redis:6379
-      - MONGODB_URI=mongodb://mongodb:27017/tradingbot
       - TRADING_MODE=${TRADING_MODE:-PAPER}
       - ALLOW_LIVE_TRADING=${ALLOW_LIVE_TRADING:-false}
       - ENABLE_LIVE_AUTO=${ENABLE_LIVE_AUTO:-false}
@@ -40,12 +39,11 @@ services:
     depends_on:
       redis:
         condition: service_started
-      mongodb:
-        condition: service_started
     volumes:
       - ./backend/logs:/app/logs
     networks:
       - indian-market-network
+    # FIX: healthcheck so frontend waits for backend to be truly ready
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/health"]
       interval: 15s
@@ -58,7 +56,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://trading-api.digitalwaveitsolution.online}
+        # FIX: pass your EC2 public IP or domain here
+        # e.g. http://13.x.x.x  OR  https://trading.digitalwaveitsolution.online
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost}
     container_name: indian-market-ai-frontend
     restart: unless-stopped
     ports:
@@ -68,7 +68,9 @@ services:
       - PORT=3000
       - HOSTNAME=0.0.0.0
       - INTERNAL_API_URL=http://backend:5000
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://trading-api.digitalwaveitsolution.online}
+      # FIX: must match what was baked in at build time
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost}
+    # FIX: wait for backend to be healthy before starting frontend
     depends_on:
       backend:
         condition: service_healthy
@@ -90,18 +92,7 @@ services:
       timeout: 5s
       retries: 5
 
-  mongodb:
-    image: mongo:7
-    container_name: indian-market-ai-mongodb
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-    networks:
-      - indian-market-network
-
-  nginx:
+    nginx:
     image: nginx:alpine
     container_name: indian-market-ai-nginx
     restart: unless-stopped
@@ -112,14 +103,11 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-      frontend:
-        condition: service_started
     networks:
       - indian-market-network
 
 volumes:
   redis-data:
-  mongo-data:
 
 networks:
   indian-market-network:
