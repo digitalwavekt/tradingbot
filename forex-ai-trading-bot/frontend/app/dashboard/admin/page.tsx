@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/hooks/useAuth';
 import { adminAPI, brokerAPI, healthAPI, tradeAPI } from '@/lib/api';
 import { AdminRuntimeStatus, AuditLog, RiskConfig, SystemHealth, TradingMode, User } from '@/types';
+import { io } from 'socket.io-client'; // ✅ Socket.io इम्पोर्ट किया
 import {
   Activity,
   AlertTriangle,
@@ -97,6 +98,10 @@ export default function AdminPage() {
   const [loadErrors, setLoadErrors] = useState<LoadError[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'status' | 'mode' | 'risk' | 'logs' | 'users'>('status');
+  
+  // 🔴 रियल-टाइम सॉकेट टर्मिनल लॉग्स के लिए स्टेट
+  const [socketLogs, setSocketLogs] = useState<{timestamp: string; message: string; type?: string}[]>([]);
+  const [socketConnected, setSocketConnected] = useState(false);
 
   const canAdminWrite = user?.role === 'super_admin' || user?.role === 'admin';
   const canReadAdmin = canAdminWrite || user?.role === 'subadmin';
@@ -159,6 +164,93 @@ export default function AdminPage() {
     fetchData();
   }, [canReadAdmin, fetchData, router]);
 
+  // 🔌 Real-Time WebSockets Event Listeners Setup
+  useEffect(() => {
+    if (!canReadAdmin) return;
+
+    // NEXT_PUBLIC_API_URL से बैकएंड यूआरएल उठाएगा, नहीं तो डिफ़ॉल्ट पोर्ट 5000 पर कनेक्ट होगा
+    const socketUrl = process.env.NEXT_PUBLIC_API_URL || window.location.origin.replace('3000', '5000');
+    const socket = io(socketUrl, {
+      withCredentials: true,
+      transports: ['websocket', 'polling']
+    });
+
+    socket.on('connect', () => {
+      setSocketConnected(true);
+      setSocketLogs((prev) => [{ timestamp: new Date().toLocaleTimeString(), message: '⚡ Real-time terminal connected to backend socket server.', type: 'SYSTEM' }, ...prev]);
+    });
+
+    socket.on('disconnect', () => {
+      setSocketConnected(false);
+    });
+
+    // 1. लाइव सिंक बैच स्टेटस अपडेट
+    socket.on('admin:sync_status', (data: any) => {
+      setRuntime((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          watchlist: {
+            ...prev.watchlist,
+            mode: data.status === 'RUNNING' ? `🚀 Processing batch: ${data.currentBatch?.join(', ')}` : 'IDLE'
+          }
+        };
+      });
+      
+      setSocketLogs((prev) => [
+        { 
+          timestamp: new Date(data.timestamp || Date.now()).toLocaleTimeString(), 
+          message: `🔄 Scheduler Sync Cycle: Status [${data.status}] | Batch: [${data.currentBatch?.join(', ') || 'None'}]`,
+          type: 'SYNC' 
+        },
+        ...prev.slice(0, 49)
+      ]);
+    });
+
+    // 2. लाइव कैंडल प्रोसेसिंग लॉग्स 
+    socket.on('admin:candle_update', (data: any) => {
+      setSocketLogs((prev) => [
+        { 
+          timestamp: new Date(data.timestamp || Date.now()).toLocaleTimeString(), 
+          message: `📊 Candle Synced -> Symbol: ${data.symbol} | Timeframe: ${data.timeframe} | Status: ${data.status}`,
+          type: 'CANDLE' 
+        },
+        ...prev.slice(0, 49)
+      ]);
+    });
+
+    // 3. लाइव 429 Rate Limit या क्रिटिकल एरर्स
+    socket.on('admin:logs', (log: any) => {
+      if (log.type === '429_ERROR') {
+        toast.error(`Rate Limit Alert: ${log.symbol} (${log.timeframe}) - ${log.message}`, { id: 'rate-limit' });
+      }
+      setSocketLogs((prev) => [
+        { 
+          timestamp: new Date().toLocaleTimeString(), 
+          message: `⚠️ [${log.type || 'ERROR'}] ${log.symbol || ''} ${log.timeframe || ''} - ${log.message}`,
+          type: 'ERROR' 
+        },
+        ...prev.slice(0, 49)
+      ]);
+    });
+
+    // 4. लाइव कंपोनेंट हेल्थ स्टेटस अपडेट (Database, Redis, API Latency)
+    socket.on('admin:health', (componentsData: any) => {
+      setApiHealth((prev: any) => {
+        if (!prev) return { status: 'HEALTHY', components: componentsData, timestamp: new Date() };
+        return {
+          ...prev,
+          components: componentsData,
+          timestamp: new Date()
+        };
+      });
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [canReadAdmin]);
+
   const effectiveMode = runtime?.effectiveMode || config?.mode || 'PAPER';
   const liveEnvAllowed = runtime?.env.allowLiveTrading === true;
   const liveAutoAllowed = liveEnvAllowed && runtime?.env.enableLiveAuto === true;
@@ -197,15 +289,15 @@ export default function AdminPage() {
     },
     {
       label: 'Database',
-      value: apiHealth?.checks?.database?.status || 'Unavailable',
-      detail: apiHealth?.checks?.database?.latency !== undefined ? `${apiHealth.checks.database.latency}ms` : 'No latency',
+      value: apiHealth?.checks?.database?.status || (apiHealth?.components?.find((c: any) => c.component === 'DATABASE')?.status) || 'Unavailable',
+      detail: apiHealth?.checks?.database?.latency !== undefined ? `${apiHealth.checks.database.latency}ms` : (apiHealth?.components?.find((c: any) => c.component === 'DATABASE')?.latency !== undefined ? `${apiHealth.components.find((c: any) => c.component === 'DATABASE').latency}ms` : 'No latency'),
       icon: Database,
-      ok: healthOk(apiHealth?.checks?.database?.status),
+      ok: healthOk(apiHealth?.checks?.database?.status || apiHealth?.components?.find((c: any) => c.component === 'DATABASE')?.status),
     },
     {
-      label: 'Watchlist',
-      value: runtime?.watchlist.count ?? 'Unavailable',
-      detail: runtime ? `${runtime.watchlist.mode} mode` : 'No runtime data',
+      label: 'Watchlist Status',
+      value: runtime?.watchlist?.count ?? 'Unavailable',
+      detail: runtime ? `${runtime.watchlist.mode}` : 'No runtime data',
       icon: Shield,
       ok: runtime ? !runtime.watchlist.hasTataMotors && !runtime.watchlist.hasLtim && runtime.watchlist.count > 0 : undefined,
     },
@@ -294,7 +386,12 @@ export default function AdminPage() {
       <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="page-kicker">Governance Console</p>
-          <h1 className="page-title">Admin Panel</h1>
+          <h1 className="page-title">Admin Panel 
+            <span className={`ml-3 inline-flex items-center text-xs font-normal px-2.5 py-0.5 rounded-full ${socketConnected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+              <span className={`w-1.5 h-1.5 mr-1.5 rounded-full ${socketConnected ? 'bg-emerald-400 animate-ping' : 'bg-red-400'}`}></span>
+              {socketConnected ? 'Sockets Streaming Live' : 'Sockets Disconnected'}
+            </span>
+          </h1>
           <p className="page-copy">
             Live operational state from backend config, environment flags, health checks, broker status, and account records.
           </p>
@@ -342,7 +439,7 @@ export default function AdminPage() {
                 <div>
                   <p className="text-xs uppercase tracking-wider text-slate-500">{card.label}</p>
                   <p className="mt-2 text-2xl font-bold text-white">{card.value}</p>
-                  <p className="mt-1 text-xs text-slate-500">{card.detail}</p>
+                  <p className="mt-1 text-xs text-slate-500 max-w-[200px] truncate" title={card.detail}>{card.detail}</p>
                 </div>
                 <div className={`rounded-lg border p-2 ${statusTone(card.ok)}`}>
                   <Icon className="h-5 w-5" />
@@ -351,6 +448,36 @@ export default function AdminPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* 🔴 REAL-TIME TERMINAL LOGS WINDOW */}
+      <div className="mb-6 surface overflow-hidden border border-white/[0.06]">
+        <div className="bg-white/[0.02] border-b border-white/[0.06] px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Clock className="h-4 w-4 text-blue-400" />
+            <h3 className="text-sm font-semibold text-white">Live Stream Scheduler Engine</h3>
+          </div>
+          <span className="text-[11px] text-slate-500 font-mono">Auto-shifting logs (Max 50)</span>
+        </div>
+        <div className="p-4 bg-black/40 h-48 overflow-y-auto font-mono text-xs space-y-1.5 scrollbar-thin">
+          {socketLogs.map((log, idx) => (
+            <div key={idx} className="flex items-start gap-3 border-b border-white/[0.02] pb-1 last:border-0">
+              <span className="text-slate-500 shrink-0">[{log.timestamp}]</span>
+              <span className={`
+                ${log.type === 'ERROR' ? 'text-red-400 font-bold' : ''}
+                ${log.type === 'SYNC' ? 'text-amber-400 font-semibold' : ''}
+                ${log.type === 'CANDLE' ? 'text-sky-400' : ''}
+                ${log.type === 'SYSTEM' ? 'text-emerald-400 italic' : ''}
+                text-slate-300
+              `}>
+                {log.message}
+              </span>
+            </div>
+          ))}
+          {socketLogs.length === 0 && (
+            <div className="text-center py-12 text-slate-500 italic">Waiting for incoming scheduler broadcasts... Cron is active every minute.</div>
+          )}
+        </div>
       </div>
 
       <div className="mb-6 flex gap-2 overflow-x-auto border-b border-white/[0.06] pb-1">
@@ -447,17 +574,17 @@ export default function AdminPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(apiHealth?.components || runtime?.systemHealth || []).map((health: SystemHealth) => (
+                    {(apiHealth?.components || apiHealth?.data?.components || runtime?.systemHealth || []).map((health: SystemHealth) => (
                       <tr key={`${health.component}-${health.lastChecked || ''}`} className="border-b border-white/[0.04]">
                         <td className="table-cell px-6 font-medium text-white">{health.component}</td>
-                        <td className="table-cell px-6">{renderStatusPill(health.status === 'healthy', health.status)}</td>
+                        <td className="table-cell px-6">{renderStatusPill(health.status?.toUpperCase() === 'HEALTHY' || health.status?.toUpperCase() === 'OK', health.status)}</td>
                         <td className="table-cell px-6 text-slate-400">{health.latency !== undefined ? `${health.latency}ms` : 'Unavailable'}</td>
                         <td className="table-cell px-6 text-slate-500">
                           {health.lastChecked ? new Date(health.lastChecked).toLocaleString() : 'Unavailable'}
                         </td>
                       </tr>
                     ))}
-                    {!(apiHealth?.components || runtime?.systemHealth || []).length && (
+                    {!(apiHealth?.components || apiHealth?.data?.components || runtime?.systemHealth || []).length && (
                       <tr>
                         <td colSpan={4} className="py-8 text-center text-sm text-slate-500">No health records returned.</td>
                       </tr>
@@ -667,15 +794,6 @@ export default function AdminPage() {
             </div>
           </div>
         )}
-
-        {activeTab === 'users' && !canAdminWrite && (
-          <div className="surface p-6 text-sm text-slate-400">User management requires admin access.</div>
-        )}
-
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <Clock className="h-4 w-4" />
-          Last runtime refresh: {runtime?.timestamp ? new Date(runtime.timestamp).toLocaleString() : 'Unavailable'}
-        </div>
       </div>
     </div>
   );

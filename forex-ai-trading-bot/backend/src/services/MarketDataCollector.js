@@ -148,6 +148,7 @@ class MarketDataCollector {
   }
 
   async fetchPrice(pair) {
+    // 1. सबसे पहले मार्केट डेटा टेबल में रीसेंट टिक प्राइस ढूंढो
     const latest = await MarketData.findOne({ pair }).sort({ timestamp: -1 }).lean();
 
     if (latest && Number.isFinite(Number(latest.bid)) && Number.isFinite(Number(latest.ask))) {
@@ -160,7 +161,26 @@ class MarketDataCollector {
       };
     }
 
-    throw new Error(`No real live price available for ${pair}. Enable Dhan quote sync before PAPER execution.`);
+    // 2. फॉलबैक लॉजिक: अगर लाइव टिक डेटा नहीं है, तो लेटेस्ट कैंडल का क्लोज प्राइस उठा लो
+    logger.warn(`No live ticker price for ${pair}. Attempting candle close price fallback...`);
+    
+    const latestCandle = await CandleData.findOne({ pair }).sort({ timestamp: -1 }).lean();
+    
+    if (latestCandle && Number.isFinite(Number(latestCandle.close))) {
+      const fallbackPrice = Number(latestCandle.close);
+      logger.info(`Fallback triggered: Using latest candle close price (${fallbackPrice}) for ${pair}`);
+      
+      return {
+        bid: fallbackPrice,
+        ask: fallbackPrice, // पेपर ट्रेडिंग के लिए bid/ask दोनों को क्लोज प्राइस मान लेते हैं
+        volatility: 0,
+        volume: Number(latestCandle.volume || 0),
+        latency: 0
+      };
+    }
+
+    // 3. अगर कैंडल डेटा भी नहीं मिलता, तब फाइनली एरर थ्रो करो
+    throw new Error(`No real live price or candle data available for ${pair}. Ensure data sync is active.`);
   }
 
   async collectCandles(pair, timeframe, count = 200) {
@@ -182,7 +202,7 @@ class MarketDataCollector {
 
         await CandleData.findOneAndUpdate(
           { pair, timeframe: candle.timeframe, timestamp: candle.timestamp },
-          candle,
+          { ...candle },
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 

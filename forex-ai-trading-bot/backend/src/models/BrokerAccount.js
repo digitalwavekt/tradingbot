@@ -210,4 +210,41 @@ brokerAccountSchema.statics.findActiveDhanAccountWithToken = function (accountId
   }).select('+accessToken +refreshToken +apiKey +apiSecret');
 };
 
+/**
+ * Applies a realized P&L from a closed PAPER trade to the active paper
+ * trading account: updates paperBalance, paperEquity, and recomputes
+ * paperTotalReturn relative to the original PAPER_TRADING_BALANCE.
+ *
+ * This MUST be called whenever a paper trade transitions to CLOSED,
+ * otherwise the dashboard's "Account Balance" / "Today's P&L" / "Paper
+ * Return" figures stay frozen at their initial values forever, even
+ * though Trade History shows real wins/losses.
+ */
+brokerAccountSchema.statics.applyPaperRealizedPnl = async function (realizedPnl) {
+  const pnl = Number(realizedPnl);
+  if (!Number.isFinite(pnl) || pnl === 0) return null;
+
+  const account = await this.findOne({ isActive: true }).sort({ updatedAt: -1 });
+  if (!account) return null;
+
+  const startingBalance = Number(process.env.PAPER_TRADING_BALANCE || 100000);
+
+  account.paperBalance = Number((Number(account.paperBalance || startingBalance) + pnl).toFixed(2));
+  account.paperEquity = Number((Number(account.paperEquity || startingBalance) + pnl).toFixed(2));
+
+  if (startingBalance > 0) {
+    account.paperTotalReturn = Number(
+      (((account.paperBalance - startingBalance) / startingBalance) * 100).toFixed(2)
+    );
+  }
+
+  if (account.paperBalance < (account.paperLowestBalance ?? account.paperBalance)) {
+    const drawdown = ((startingBalance - account.paperBalance) / startingBalance) * 100;
+    account.paperMaxDrawdown = Math.max(Number(account.paperMaxDrawdown || 0), drawdown);
+  }
+
+  await account.save();
+  return account;
+};
+
 module.exports = mongoose.model('BrokerAccount', brokerAccountSchema);

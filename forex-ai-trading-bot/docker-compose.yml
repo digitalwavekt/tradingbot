@@ -37,6 +37,7 @@ services:
       - MIN_CANDLE_COUNT_15M=${MIN_CANDLE_COUNT_15M:-50}
       - MIN_CANDLE_COUNT_1H=${MIN_CANDLE_COUNT_1H:-30}
       - MIN_CANDLE_COUNT_1D=${MIN_CANDLE_COUNT_1D:-4}
+      - TZ=Asia/Kolkata
     depends_on:
       redis:
         condition: service_started

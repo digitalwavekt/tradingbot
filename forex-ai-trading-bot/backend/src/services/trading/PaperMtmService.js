@@ -1,5 +1,5 @@
 const logger = require('../../utils/logger');
-const { Trade, CandleData } = require('../../models');
+const { Trade, CandleData, BrokerAccount } = require('../../models');
 
 function asNumber(value) {
   const n = Number(value);
@@ -150,6 +150,17 @@ class PaperMtmService {
         details: { exitReason, currentPrice: price, realizedPnl: monetaryPnl }
       });
       await trade.save();
+
+      try {
+        await BrokerAccount.applyPaperRealizedPnl(monetaryPnl);
+      } catch (err) {
+        logger.error('Failed to apply paper realized P&L to account balance', {
+          tradeId: trade.tradeId,
+          realizedPnl: monetaryPnl,
+          message: err.message
+        });
+      }
+
       return true;
     }
 
