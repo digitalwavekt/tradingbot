@@ -97,3 +97,9 @@ backend/.env.bak-*
 backend-backup-*/
 backups/
 backend/scripts/
+.env
+*.env
+ec2-debug-info/
+ec2-debug-info.zip
+downloaded_debug.zip
+*.zip
